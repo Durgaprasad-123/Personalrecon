@@ -24,6 +24,7 @@ Stages:
   http_discovery
   http_exploitation
   nuclei
+  ffuf
 
 Example:
   ./recon.sh example.com
@@ -56,7 +57,7 @@ done
 ########################################
 # STAGES
 ########################################
-STAGES=(passive bruteforce permutations dns recon_intel http_discovery http_exploitation nuclei)
+STAGES=(passive bruteforce permutations dns recon_intel http_discovery http_exploitation nuclei ffuf)
 
 stage_exists() {
   for s in "${STAGES[@]}"; do
@@ -99,7 +100,7 @@ AMASS_CONFIG="$HOME/.config/amass/config.yaml"
 OUTPUT_ROOT="${OUTPUT_ROOT:-$PROJECT_ROOT/output}"
 BASE_DIR="$OUTPUT_ROOT/$domain"
 
-mkdir -p "$BASE_DIR"/{passive,bruteforce,permutations,dns,final,tmp,logs,recon_intel,http_discovery,http_exploitation,nuclei}
+mkdir -p "$BASE_DIR"/{passive,bruteforce,permutations,dns,final,tmp,logs,recon_intel,http_discovery,http_exploitation,nuclei,ffuf}
 
 LOG_FILE="$BASE_DIR/logs/recon.log"
 mkdir -p "$(dirname "$LOG_FILE")"
@@ -409,4 +410,237 @@ if should_run http_discovery; then
   grep '\[200\]' "$BASE_DIR/http_discovery/httpx_full.txt" 2>/dev/null | awk '{print $1}' \
     > "$BASE_DIR/http_discovery/status_200.txt" || true
   
-  grep '
+  grep '\[403\]' "$BASE_DIR/http_discovery/httpx_full.txt" 2>/dev/null | awk '{print $1}' \
+    > "$BASE_DIR/http_discovery/status_403.txt" || true
+
+  grep '\[401\]' "$BASE_DIR/http_discovery/httpx_full.txt" 2>/dev/null | awk '{print $1}' \
+    > "$BASE_DIR/http_discovery/status_401.txt" || true
+
+  # Extract technologies
+  grep -oP '\[.*?\]' "$BASE_DIR/http_discovery/httpx_full.txt" 2>/dev/null | sort -u \
+    > "$BASE_DIR/http_discovery/technologies.txt" || true
+
+  log "Live HTTP services: $(wc -l < "$BASE_DIR/http_discovery/live_urls.txt" 2>/dev/null || echo 0)"
+fi
+
+########################################
+# HTTP EXPLOITATION
+########################################
+if should_run http_exploitation; then
+  log "STAGE: http_exploitation"
+
+  # High-value endpoints
+  grep -Eai '(admin|api|auth|login|dashboard|panel|console|vpn|portal|staging|dev|test)' \
+    "$BASE_DIR/http_discovery/live_urls.txt" \
+    | sort -u > "$BASE_DIR/http_exploitation/high_value_urls.txt" 2>/dev/null || true
+
+  # Authenticated endpoints (401/403)
+  safe_cat "$BASE_DIR/http_discovery/status_401.txt" \
+           "$BASE_DIR/http_discovery/status_403.txt" \
+    | sort -u > "$BASE_DIR/http_exploitation/auth_required.txt"
+
+  log "High-value URLs: $(wc -l < "$BASE_DIR/http_exploitation/high_value_urls.txt" 2>/dev/null || echo 0)"
+  log "Auth-required URLs: $(wc -l < "$BASE_DIR/http_exploitation/auth_required.txt" 2>/dev/null || echo 0)"
+fi
+
+########################################
+# NUCLEI
+########################################
+if should_run nuclei; then
+  log "STAGE: nuclei"
+
+  # Update templates first
+  log "Updating Nuclei templates..."
+  nuclei -update-templates -silent 2>/dev/null || true
+
+  # Function to run nuclei with timeout and progress
+  run_nuclei_scan() {
+    local target_file="$1"
+    local templates="$2"
+    local severity="$3"
+    local output_base="$4"
+    local description="$5"
+    local exclude_tags="${6:-}"
+    
+    if [[ ! -s "$target_file" ]]; then
+      warn "Skipping $description: no targets in $target_file"
+      return
+    fi
+    
+    local target_count=$(wc -l < "$target_file")
+    log "Starting $description on $target_count targets..."
+    
+    local cmd="nuclei -l \"$target_file\" \
+      -t \"$templates\" \
+      -severity \"$severity\" \
+      -c \"$NUCLEI_CONCURRENCY\" \
+      -rl \"$NUCLEI_RATE\" \
+      -timeout \"$NUCLEI_TIMEOUT\" \
+      -retries 1 \
+      -silent -no-color"
+    
+    if [[ -n "$exclude_tags" ]]; then
+      cmd="$cmd -exclude-tags \"$exclude_tags\""
+    fi
+    
+    cmd="$cmd -o \"${output_base}.txt\""
+    
+    # Run with timeout (30 minutes max per scan type)
+    timeout 1800 bash -c "$cmd" 2>"${output_base}_error.log" || {
+      local exit_code=$?
+      if [[ $exit_code -eq 124 ]]; then
+        warn "$description timed out after 30 minutes"
+      else
+        warn "$description exited with code $exit_code"
+      fi
+    }
+    
+    # Show progress
+    if [[ -s "${output_base}.txt" ]]; then
+      local findings=$(wc -l < "${output_base}.txt")
+      log "$description completed: $findings findings"
+    else
+      log "$description completed: 0 findings"
+    fi
+  }
+
+  # 1. CRITICAL: Subdomain takeover scan
+  if [[ -s "$BASE_DIR/recon_intel/takeover_candidates.txt" ]]; then
+    run_nuclei_scan \
+      "$BASE_DIR/recon_intel/takeover_candidates.txt" \
+      "$NUCLEI_TEMPLATES/http/takeovers/,$NUCLEI_TEMPLATES/dns/" \
+      "info,low,medium,high,critical" \
+      "$BASE_DIR/nuclei/takeovers" \
+      "Subdomain Takeover Scan"
+  fi
+
+  # 2. HIGH PRIORITY: CVE and vulnerability scan on high-value targets
+  if [[ -s "$BASE_DIR/http_exploitation/high_value_urls.txt" ]]; then
+    run_nuclei_scan \
+      "$BASE_DIR/http_exploitation/high_value_urls.txt" \
+      "$NUCLEI_TEMPLATES/cves/,$NUCLEI_TEMPLATES/vulnerabilities/,$NUCLEI_TEMPLATES/exposures/" \
+      "high,critical" \
+      "$BASE_DIR/nuclei/high_value" \
+      "High-Value CVE/Vuln Scan"
+  fi
+
+  # 3. Exposed panels and default logins
+  if [[ -s "$BASE_DIR/http_discovery/live_urls.txt" ]]; then
+    run_nuclei_scan \
+      "$BASE_DIR/http_discovery/live_urls.txt" \
+      "$NUCLEI_TEMPLATES/exposed-panels/,$NUCLEI_TEMPLATES/default-logins/" \
+      "medium,high,critical" \
+      "$BASE_DIR/nuclei/exposed_panels" \
+      "Exposed Panels Scan"
+  fi
+
+  # 4. Misconfigurations
+  if [[ -s "$BASE_DIR/http_discovery/live_urls.txt" ]]; then
+    run_nuclei_scan \
+      "$BASE_DIR/http_discovery/live_urls.txt" \
+      "$NUCLEI_TEMPLATES/misconfiguration/,$NUCLEI_TEMPLATES/exposures/" \
+      "medium,high,critical" \
+      "$BASE_DIR/nuclei/misconfigurations" \
+      "Misconfiguration Scan" \
+      "dos,fuzz,intrusive"
+  fi
+
+  # 5. Comprehensive scan (only if reasonable number of targets)
+  LIVE_COUNT=$(wc -l < "$BASE_DIR/http_discovery/live_urls.txt" 2>/dev/null || echo 0)
+  if [[ "$LIVE_COUNT" -lt 500 && "$LIVE_COUNT" -gt 0 ]]; then
+    run_nuclei_scan \
+      "$BASE_DIR/http_discovery/live_urls.txt" \
+      "$NUCLEI_TEMPLATES/" \
+      "low,medium,high,critical" \
+      "$BASE_DIR/nuclei/comprehensive" \
+      "Comprehensive Scan" \
+      "dos,fuzz,intrusive"
+  else
+    log "Skipping comprehensive scan: $LIVE_COUNT URLs (threshold: 1-500)"
+  fi
+
+  # Aggregate all findings
+  log "Aggregating critical findings..."
+  {
+    [[ -s "$BASE_DIR/nuclei/takeovers.txt" ]] && grep -Ei 'critical|high' "$BASE_DIR/nuclei/takeovers.txt" 2>/dev/null
+    [[ -s "$BASE_DIR/nuclei/high_value.txt" ]] && grep -Ei 'critical|high' "$BASE_DIR/nuclei/high_value.txt" 2>/dev/null
+    [[ -s "$BASE_DIR/nuclei/exposed_panels.txt" ]] && grep -Ei 'critical|high' "$BASE_DIR/nuclei/exposed_panels.txt" 2>/dev/null
+    [[ -s "$BASE_DIR/nuclei/misconfigurations.txt" ]] && grep -Ei 'critical' "$BASE_DIR/nuclei/misconfigurations.txt" 2>/dev/null
+    [[ -s "$BASE_DIR/nuclei/comprehensive.txt" ]] && grep -Ei 'critical' "$BASE_DIR/nuclei/comprehensive.txt" 2>/dev/null
+  } 2>/dev/null | sort -u > "$BASE_DIR/nuclei/CRITICAL_FINDINGS.txt" || true
+
+  log "Nuclei scans completed"
+  log "Critical findings: $(wc -l < "$BASE_DIR/nuclei/CRITICAL_FINDINGS.txt" 2>/dev/null || echo 0)"
+fi
+
+log "Cleaning up empty files..."
+cleanup_empty_files "$BASE_DIR"
+
+########################################
+# FFUF DIRECTORY FUZZING
+########################################
+if should_run ffuf; then
+  log "STAGE: ffuf"
+
+  # Check if ffuf is installed
+  if ! command -v ffuf &>/dev/null; then
+    warn "ffuf not installed, skipping directory fuzzing"
+    warn "Install with: go install github.com/ffuf/ffuf/v2@latest"
+  elif [[ ! -s "$BASE_DIR/http_discovery/httpx_full.txt" ]]; then
+    warn "No HTTP targets found, skipping ffuf"
+  else
+    log "Starting directory fuzzing with ffuf..."
+    
+    FFUF_SCRIPT="$SCRIPT_DIR/ffuf.sh"
+    
+    if [[ -x "$FFUF_SCRIPT" ]]; then
+      # Run ffuf script with httpx results
+      "$FFUF_SCRIPT" "$BASE_DIR/http_discovery/httpx_full.txt" \
+        --output "$BASE_DIR/ffuf" \
+        --threads 30 \
+        --timeout 10 \
+        --max-targets 50 || {
+          warn "ffuf scanning failed or incomplete"
+        }
+      
+      # Count findings
+      if [[ -s "$BASE_DIR/ffuf/ALL_FINDINGS.txt" ]]; then
+        FFUF_FINDINGS=$(wc -l < "$BASE_DIR/ffuf/ALL_FINDINGS.txt")
+        log "ffuf found $FFUF_FINDINGS paths"
+      else
+        log "ffuf found no paths"
+      fi
+    else
+      warn "ffuf.sh not found or not executable at $FFUF_SCRIPT"
+      warn "Skipping directory fuzzing"
+    fi
+  fi
+fi
+
+########################################
+# CLEANUP & FINAL SUMMARY
+########################################
+
+log "================================================"
+log "Recon Summary for $domain"
+log "================================================"
+log "Passive seeds: $(wc -l < "$BASE_DIR/passive/passive_seeds.txt" 2>/dev/null || echo 0)"
+log "Resolved domains: $(wc -l < "$BASE_DIR/dns/resolved_domains.txt" 2>/dev/null || echo 0)"
+log "Live HTTP services: $(wc -l < "$BASE_DIR/http_discovery/live_urls.txt" 2>/dev/null || echo 0)"
+log "Takeover candidates: $(wc -l < "$BASE_DIR/recon_intel/takeover_candidates.txt" 2>/dev/null || echo 0)"
+log "High-value URLs: $(wc -l < "$BASE_DIR/http_exploitation/high_value_urls.txt" 2>/dev/null || echo 0)"
+log "CRITICAL Nuclei findings: $(wc -l < "$BASE_DIR/nuclei/CRITICAL_FINDINGS.txt" 2>/dev/null || echo 0)"
+log "ffuf discovered paths: $(wc -l < "$BASE_DIR/ffuf/ALL_FINDINGS.txt" 2>/dev/null || echo 0)"
+log "================================================"
+
+echo ""
+echo "[✓] Recon completed for $domain"
+echo "    Results: $BASE_DIR"
+echo ""
+echo "Key Files:"
+echo "  - Domains:  $BASE_DIR/dns/resolved_domains.txt"
+echo "  - Live URLs: $BASE_DIR/http_discovery/live_urls.txt"
+echo "  - Takeovers: $BASE_DIR/recon_intel/takeover_candidates.txt"
+echo "  - CRITICAL:  $BASE_DIR/nuclei/CRITICAL_FINDINGS.txt"
+echo "  - ffuf Paths: $BASE_DIR/ffuf/ALL_FINDINGS.txt"
+echo ""
