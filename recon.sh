@@ -86,15 +86,15 @@ should_run() {
 ########################################
 HTTP_THREADS=50
 HTTP_RATE=120
-NUCLEI_CONCURRENCY=25  # Nuclei parallel scans
-NUCLEI_RATE=150  # Nuclei requests per second
+NUCLEI_CONCURRENCY=30  # Nuclei parallel scans
+NUCLEI_RATE=200        # Nuclei requests per second
+NUCLEI_TIMEOUT=10      # Timeout for each template in seconds
 
 RESOLVERS="$HOME/resolvers.txt"
 WORDLIST="$HOME/wordlists/dns.txt"
 ALTDNS_WORDLIST="$HOME/wordlists/altdns_words.txt"
 NUCLEI_TEMPLATES="$HOME/nuclei-templates"
-AMASS_CONFIG="/home/ubuntu/.config/amass/config.yaml"
-AMASS_DATASOURCES="/home/ubuntu/.config/amass/datasources.yaml"
+AMASS_CONFIG="$HOME/.config/amass/config.yaml"
 
 OUTPUT_ROOT="${OUTPUT_ROOT:-$PROJECT_ROOT/output}"
 BASE_DIR="$OUTPUT_ROOT/$domain"
@@ -114,12 +114,44 @@ need(){
   [[ -s "$1" ]] || { warn "Missing dependency: $1 (run $2)"; exit 1; }
 }
 
+# Clean up empty files at the end
+cleanup_empty_files() {
+  local dir="$1"
+  log "Cleaning up empty files in $dir..."
+  find "$dir" -type f -empty -delete 2>/dev/null || true
+}
+
 ########################################
 # TOOL CHECKS
 ########################################
+log "Checking required tools..."
+MISSING_TOOLS=()
+
 for t in subfinder assetfinder amass puredns dnsgen altdns httpx nuclei awk sed grep sort cut; do
-  command -v "$t" >/dev/null || { echo "[!] Missing tool: $t"; exit 1; }
+  if ! command -v "$t" >/dev/null 2>&1; then
+    MISSING_TOOLS+=("$t")
+  fi
 done
+
+if [[ ${#MISSING_TOOLS[@]} -gt 0 ]]; then
+  echo ""
+  echo "[!] Missing required tools: ${MISSING_TOOLS[*]}"
+  echo ""
+  echo "Run './install.sh' to install missing tools, or install them manually:"
+  echo ""
+  echo "  subfinder:    go install -v github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest"
+  echo "  assetfinder:  go install -v github.com/tomnomnom/assetfinder@latest"
+  echo "  amass:        apt-get install amass  OR  go install -v github.com/owasp-amass/amass/v4/...@master"
+  echo "  puredns:      go install github.com/d3mondev/puredns/v2@latest"
+  echo "  dnsgen:       python3 -m pip install dnsgen"
+  echo "  altdns:       pip3 install py-altdns==1.0.2"
+  echo "  httpx:        go install -v github.com/projectdiscovery/httpx/cmd/httpx@latest"
+  echo "  nuclei:       go install -v github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest"
+  echo ""
+  exit 1
+fi
+
+log "All tools found ✓"
 
 ########################################
 # PASSIVE
@@ -235,8 +267,18 @@ if should_run permutations; then
   need "$BASE_DIR/final/resolved_fqdns.txt" "bruteforce"
 
   # Generate permutations with dnsgen
+  log "Running dnsgen..."
   dnsgen "$BASE_DIR/final/resolved_fqdns.txt" \
     > "$BASE_DIR/permutations/dnsgen_raw.txt" || true
+
+  # Filter out invalid dnsgen results (ASN announcements, malformed domains)
+  log "Filtering dnsgen output..."
+  grep -E "^[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?)*\.$domain$" \
+    "$BASE_DIR/permutations/dnsgen_raw.txt" 2>/dev/null \
+    | grep -v -E "(asn|announces|cname_record|--|\.\.|^\.|^>)" \
+    | sort -u > "$BASE_DIR/permutations/dnsgen_filtered.txt" || true
+
+  log "Dnsgen valid: $(wc -l < "$BASE_DIR/permutations/dnsgen_filtered.txt" 2>/dev/null || echo 0) (filtered from $(wc -l < "$BASE_DIR/permutations/dnsgen_raw.txt" 2>/dev/null || echo 0))"
 
   # Extract subdomain labels for altdns
   sed "s/\\.$domain\$//" "$BASE_DIR/final/resolved_fqdns.txt" \
@@ -245,6 +287,7 @@ if should_run permutations; then
 
   # Generate altdns permutations
   if [[ -s "$ALTDNS_WORDLIST" ]] && [[ -s "$BASE_DIR/permutations/base_labels.txt" ]]; then
+    log "Running altdns..."
     altdns -i "$BASE_DIR/permutations/base_labels.txt" \
            -w "$ALTDNS_WORDLIST" \
            -o "$BASE_DIR/permutations/altdns_raw.txt" \
@@ -253,6 +296,8 @@ if should_run permutations; then
     # Add domain suffix to altdns output
     sed "s/$/.$domain/" "$BASE_DIR/permutations/altdns_raw.txt" \
       > "$BASE_DIR/permutations/altdns_fqdns.txt"
+    
+    log "Altdns generated: $(wc -l < "$BASE_DIR/permutations/altdns_fqdns.txt" 2>/dev/null || echo 0)"
   else
     warn "Skipping altdns (missing wordlist or labels)"
     : > "$BASE_DIR/permutations/altdns_fqdns.txt"
@@ -260,12 +305,12 @@ if should_run permutations; then
 
   # Combine all permutations and filter valid patterns
   {
-    [[ -s "$BASE_DIR/permutations/dnsgen_raw.txt" ]] && cat "$BASE_DIR/permutations/dnsgen_raw.txt"
+    [[ -s "$BASE_DIR/permutations/dnsgen_filtered.txt" ]] && cat "$BASE_DIR/permutations/dnsgen_filtered.txt"
     [[ -s "$BASE_DIR/permutations/altdns_fqdns.txt" ]] && cat "$BASE_DIR/permutations/altdns_fqdns.txt"
   } | grep -E "\.$domain$" \
     | sort -u > "$BASE_DIR/permutations/all_permutations.txt"
 
-  log "Permutations generated: $(wc -l < "$BASE_DIR/permutations/all_permutations.txt" 2>/dev/null || echo 0)"
+  log "Total permutations: $(wc -l < "$BASE_DIR/permutations/all_permutations.txt" 2>/dev/null || echo 0)"
 fi
 
 ########################################
@@ -315,30 +360,31 @@ if should_run recon_intel; then
   # Cloud assets detection
   grep -Eai 'amazonaws|azure|cloudfront|googleusercontent|cloudflare|fastly|akamai' \
     "$BASE_DIR/dns/dns_to_ip_map.txt" \
-    > "$BASE_DIR/recon_intel/cloud_assets.txt" || true
+    > "$BASE_DIR/recon_intel/cloud_assets.txt" 2>/dev/null || true
 
   # Subdomain takeover candidates - improved patterns
-  grep -Eo '^[^ ]+' "$BASE_DIR/dns/dns_to_ip_map.txt" | grep -Eai \
+  grep -Eo '^[^ ]+' "$BASE_DIR/dns/dns_to_ip_map.txt" 2>/dev/null | grep -Eai \
     'herokuapp\.com|github\.io|s3\.amazonaws\.com|s3-website|' \
 'elasticbeanstalk\.com|azurewebsites\.net|cloudapp\.azure\.com|' \
 'trafficmanager\.net|blob\.core\.windows\.net|cloudapp\.net|' \
 'azureedge\.net|fastly\.net|netlify\.app|vercel\.app|' \
 'zendesk\.com|bitbucket\.io|ghost\.io|readme\.io|' \
 'pantheonsite\.io|surge\.sh|shopify\.com|desk\.com' \
-    | sort -u > "$BASE_DIR/recon_intel/takeover_candidates.txt" || true
+    | sort -u > "$BASE_DIR/recon_intel/takeover_candidates.txt" 2>/dev/null || true
 
   # Extract third-party services
-  grep -Eo '^[^ ]+' "$BASE_DIR/dns/dns_to_ip_map.txt" | grep -Eai \
+  grep -Eo '^[^ ]+' "$BASE_DIR/dns/dns_to_ip_map.txt" 2>/dev/null | grep -Eai \
     'zendesk|atlassian|salesforce|shopify|wordpress|wix' \
-    | sort -u > "$BASE_DIR/recon_intel/third_party_services.txt" || true
+    | sort -u > "$BASE_DIR/recon_intel/third_party_services.txt" 2>/dev/null || true
 
   # Identify wildcards (multiple subdomains pointing to same IP)
-  awk '{print $2}' "$BASE_DIR/dns/dns_to_ip_map.txt" | sort | uniq -c | sort -rn \
+  awk '{print $2}' "$BASE_DIR/dns/dns_to_ip_map.txt" 2>/dev/null | sort | uniq -c | sort -rn \
     | awk '$1 > 5 {print $2}' \
-    > "$BASE_DIR/recon_intel/potential_wildcards.txt" || true
+    > "$BASE_DIR/recon_intel/potential_wildcards.txt" 2>/dev/null || true
 
   log "Cloud assets: $(wc -l < "$BASE_DIR/recon_intel/cloud_assets.txt" 2>/dev/null || echo 0)"
   log "Takeover candidates: $(wc -l < "$BASE_DIR/recon_intel/takeover_candidates.txt" 2>/dev/null || echo 0)"
+  log "Third-party services: $(wc -l < "$BASE_DIR/recon_intel/third_party_services.txt" 2>/dev/null || echo 0)"
 fi
 
 ########################################
@@ -360,163 +406,7 @@ if should_run http_discovery; then
     | sort -u > "$BASE_DIR/http_discovery/live_urls.txt"
 
   # Extract by status code
-  grep '\[200\]' "$BASE_DIR/http_discovery/httpx_full.txt" | awk '{print $1}' \
+  grep '\[200\]' "$BASE_DIR/http_discovery/httpx_full.txt" 2>/dev/null | awk '{print $1}' \
     > "$BASE_DIR/http_discovery/status_200.txt" || true
   
-  grep '\[403\]' "$BASE_DIR/http_discovery/httpx_full.txt" | awk '{print $1}' \
-    > "$BASE_DIR/http_discovery/status_403.txt" || true
-
-  grep '\[401\]' "$BASE_DIR/http_discovery/httpx_full.txt" | awk '{print $1}' \
-    > "$BASE_DIR/http_discovery/status_401.txt" || true
-
-  # Extract technologies
-  grep -oP '\[.*?\]' "$BASE_DIR/http_discovery/httpx_full.txt" | sort -u \
-    > "$BASE_DIR/http_discovery/technologies.txt" || true
-
-  log "Live HTTP services: $(wc -l < "$BASE_DIR/http_discovery/live_urls.txt" 2>/dev/null || echo 0)"
-fi
-
-########################################
-# HTTP EXPLOITATION
-########################################
-if should_run http_exploitation; then
-  log "STAGE: http_exploitation"
-
-  # High-value endpoints
-  grep -Eai '(admin|api|auth|login|dashboard|panel|console|vpn|portal|staging|dev|test)' \
-    "$BASE_DIR/http_discovery/live_urls.txt" \
-    | sort -u > "$BASE_DIR/http_exploitation/high_value_urls.txt" || true
-
-  # Authenticated endpoints (401/403)
-  safe_cat "$BASE_DIR/http_discovery/status_401.txt" \
-           "$BASE_DIR/http_discovery/status_403.txt" \
-    | sort -u > "$BASE_DIR/http_exploitation/auth_required.txt" || true
-
-  log "High-value URLs: $(wc -l < "$BASE_DIR/http_exploitation/high_value_urls.txt" 2>/dev/null || echo 0)"
-fi
-
-########################################
-# NUCLEI
-########################################
-if should_run nuclei; then
-  log "STAGE: nuclei"
-
-  # Update templates first
-  log "Updating Nuclei templates..."
-  nuclei -update-templates -silent 2>/dev/null || true
-
-  # Subdomain takeover scan - HIGH PRIORITY
-  if [[ -s "$BASE_DIR/recon_intel/takeover_candidates.txt" ]]; then
-    log "Scanning for subdomain takeovers..."
-    nuclei -l "$BASE_DIR/recon_intel/takeover_candidates.txt" \
-           -t "$NUCLEI_TEMPLATES/http/takeovers/" \
-           -t "$NUCLEI_TEMPLATES/dns/azure-takeover-detection.yaml" \
-           -t "$NUCLEI_TEMPLATES/dns/elasticbeanstalk-takeover.yaml" \
-           -severity info,low,medium,high,critical \
-           -c "$NUCLEI_CONCURRENCY" \
-           -rl "$NUCLEI_RATE" \
-           -silent -no-color \
-           -markdown-export "$BASE_DIR/nuclei/takeovers.md" \
-           -json-export "$BASE_DIR/nuclei/takeovers.json" \
-           -o "$BASE_DIR/nuclei/takeovers.txt" || true
-  fi
-
-  # CVE and vulnerability scan on high-value targets
-  if [[ -s "$BASE_DIR/http_exploitation/high_value_urls.txt" ]]; then
-    log "Scanning high-value URLs for CVEs and vulnerabilities..."
-    nuclei -l "$BASE_DIR/http_exploitation/high_value_urls.txt" \
-           -t "$NUCLEI_TEMPLATES/cves/" \
-           -t "$NUCLEI_TEMPLATES/vulnerabilities/" \
-           -t "$NUCLEI_TEMPLATES/exposures/" \
-           -t "$NUCLEI_TEMPLATES/misconfiguration/" \
-           -severity high,critical \
-           -c "$NUCLEI_CONCURRENCY" \
-           -rl "$NUCLEI_RATE" \
-           -silent -no-color \
-           -markdown-export "$BASE_DIR/nuclei/high_value.md" \
-           -json-export "$BASE_DIR/nuclei/high_value.json" \
-           -o "$BASE_DIR/nuclei/high_value_findings.txt" || true
-  fi
-
-  # Exposed panels and login pages
-  if [[ -s "$BASE_DIR/http_discovery/live_urls.txt" ]]; then
-    log "Scanning for exposed panels and authentication pages..."
-    nuclei -l "$BASE_DIR/http_discovery/live_urls.txt" \
-           -t "$NUCLEI_TEMPLATES/exposed-panels/" \
-           -t "$NUCLEI_TEMPLATES/default-logins/" \
-           -severity medium,high,critical \
-           -c "$NUCLEI_CONCURRENCY" \
-           -rl "$NUCLEI_RATE" \
-           -silent -no-color \
-           -o "$BASE_DIR/nuclei/exposed_panels.txt" || true
-  fi
-
-  # Technologies and misconfigurations scan
-  if [[ -s "$BASE_DIR/http_discovery/live_urls.txt" ]]; then
-    log "Scanning for misconfigurations and exposures..."
-    nuclei -l "$BASE_DIR/http_discovery/live_urls.txt" \
-           -t "$NUCLEI_TEMPLATES/misconfiguration/" \
-           -t "$NUCLEI_TEMPLATES/exposures/" \
-           -t "$NUCLEI_TEMPLATES/miscellaneous/" \
-           -severity medium,high,critical \
-           -c "$NUCLEI_CONCURRENCY" \
-           -rl "$NUCLEI_RATE" \
-           -silent -no-color \
-           -exclude-tags dos,fuzz,intrusive \
-           -o "$BASE_DIR/nuclei/misconfigurations.txt" || true
-  fi
-
-  # Comprehensive scan on all live URLs (if not too many)
-  LIVE_COUNT=$(wc -l < "$BASE_DIR/http_discovery/live_urls.txt" 2>/dev/null || echo 0)
-  if [[ "$LIVE_COUNT" -lt 500 && -s "$BASE_DIR/http_discovery/live_urls.txt" ]]; then
-    log "Running comprehensive Nuclei scan on all $LIVE_COUNT live URLs..."
-    nuclei -l "$BASE_DIR/http_discovery/live_urls.txt" \
-           -severity low,medium,high,critical \
-           -c "$NUCLEI_CONCURRENCY" \
-           -rl "$NUCLEI_RATE" \
-           -silent -no-color \
-           -exclude-tags dos,fuzz,intrusive \
-           -exclude-severity info \
-           -markdown-export "$BASE_DIR/nuclei/comprehensive.md" \
-           -json-export "$BASE_DIR/nuclei/comprehensive.json" \
-           -o "$BASE_DIR/nuclei/all_findings.txt" || true
-  else
-    log "Skipping comprehensive scan: $LIVE_COUNT URLs (threshold: 500)"
-  fi
-
-  # Combine all critical findings
-  log "Aggregating critical findings..."
-  {
-    [[ -s "$BASE_DIR/nuclei/takeovers.txt" ]] && grep -i 'critical\|high' "$BASE_DIR/nuclei/takeovers.txt"
-    [[ -s "$BASE_DIR/nuclei/high_value_findings.txt" ]] && grep -i 'critical\|high' "$BASE_DIR/nuclei/high_value_findings.txt"
-    [[ -s "$BASE_DIR/nuclei/misconfigurations.txt" ]] && grep -i 'critical' "$BASE_DIR/nuclei/misconfigurations.txt"
-  } 2>/dev/null | sort -u > "$BASE_DIR/nuclei/CRITICAL_FINDINGS.txt" || true
-
-  log "Nuclei scans completed"
-  log "Critical findings: $(wc -l < "$BASE_DIR/nuclei/CRITICAL_FINDINGS.txt" 2>/dev/null || echo 0)"
-fi
-
-########################################
-# FINAL SUMMARY
-########################################
-log "================================================"
-log "Recon Summary for $domain"
-log "================================================"
-log "Passive seeds: $(wc -l < "$BASE_DIR/passive/passive_seeds.txt" 2>/dev/null || echo 0)"
-log "Resolved domains: $(wc -l < "$BASE_DIR/dns/resolved_domains.txt" 2>/dev/null || echo 0)"
-log "Live HTTP services: $(wc -l < "$BASE_DIR/http_discovery/live_urls.txt" 2>/dev/null || echo 0)"
-log "Takeover candidates: $(wc -l < "$BASE_DIR/recon_intel/takeover_candidates.txt" 2>/dev/null || echo 0)"
-log "High-value URLs: $(wc -l < "$BASE_DIR/http_exploitation/high_value_urls.txt" 2>/dev/null || echo 0)"
-log "CRITICAL Nuclei findings: $(wc -l < "$BASE_DIR/nuclei/CRITICAL_FINDINGS.txt" 2>/dev/null || echo 0)"
-log "================================================"
-
-echo ""
-echo "[✓] Recon completed for $domain"
-echo "    Results: $BASE_DIR"
-echo ""
-echo "Key Files:"
-echo "  - Domains:  $BASE_DIR/dns/resolved_domains.txt"
-echo "  - Live URLs: $BASE_DIR/http_discovery/live_urls.txt"
-echo "  - Takeovers: $BASE_DIR/recon_intel/takeover_candidates.txt"
-echo "  - CRITICAL:  $BASE_DIR/nuclei/CRITICAL_FINDINGS.txt"
-echo ""
+  grep '
