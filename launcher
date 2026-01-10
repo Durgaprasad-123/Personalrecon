@@ -1,0 +1,254 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+########################################
+# Colors
+########################################
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+MAGENTA='\033[0;35m'
+NC='\033[0m' # No Color
+
+log() { echo -e "${BLUE}[*]${NC} $*"; }
+success() { echo -e "${GREEN}[✓]${NC} $*"; }
+warn() { echo -e "${YELLOW}[!]${NC} $*"; }
+error() { echo -e "${RED}[✗]${NC} $*"; }
+info() { echo -e "${CYAN}[i]${NC} $*"; }
+
+########################################
+# Banner
+########################################
+show_banner() {
+cat << "EOF"
+╔═══════════════════════════════════════════════════════════╗
+║                                                           ║
+║     █████╗ ██████╗ ██╗   ██╗ █████╗ ███╗   ██╗ ██████╗  ║
+║    ██╔══██╗██╔══██╗██║   ██║██╔══██╗████╗  ██║██╔════╝  ║
+║    ███████║██║  ██║██║   ██║███████║██╔██╗ ██║██║       ║
+║    ██╔══██║██║  ██║╚██╗ ██╔╝██╔══██║██║╚██╗██║██║       ║
+║    ██║  ██║██████╔╝ ╚████╔╝ ██║  ██║██║ ╚████║╚██████╗  ║
+║    ╚═╝  ╚═╝╚═════╝   ╚═══╝  ╚═╝  ╚═╝╚═╝  ╚═══╝ ╚═════╝  ║
+║                                                           ║
+║           Advanced Reconnaissance Toolkit --prasad        ║
+║                                                           ║
+╚═══════════════════════════════════════════════════════════╝
+EOF
+echo ""
+}
+
+########################################
+# Help
+########################################
+show_help() {
+cat <<EOF
+Usage: $(basename "$0") [OPTIONS] <domain>
+
+Options:
+  -i, --install          Install all required tools
+  -c, --check           Check tool installation status
+  -f, --full            Run full reconnaissance pipeline
+  -s, --stage <name>    Start from specific stage
+  -o, --output <dir>    Custom output directory
+  -h, --help            Show this help message
+
+Stages:
+  passive               Passive subdomain enumeration
+  bruteforce            DNS bruteforce
+  permutations          Domain permutations
+  dns                   DNS resolution
+  recon_intel           Intelligence gathering
+  http_discovery        HTTP service discovery
+  http_exploitation     High-value target identification
+  nuclei                Vulnerability scanning
+  ffuf                  Directory fuzzing
+
+Examples:
+  # Setup and install tools
+  $(basename "$0") --install
+
+  # Check tool status
+  $(basename "$0") --check
+
+  # Full reconnaissance
+  $(basename "$0") --full example.com
+
+  # Start from specific stage
+  $(basename "$0") --stage nuclei example.com
+
+  # Custom output directory
+  $(basename "$0") --full example.com --output /tmp/recon
+
+Quick Start:
+  1. $(basename "$0") --install        # Install tools
+  2. $(basename "$0") --check          # Verify installation
+  3. $(basename "$0") --full target.com # Run reconnaissance
+
+EOF
+}
+
+########################################
+# Script directory
+########################################
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
+
+########################################
+# Parse arguments
+########################################
+ACTION=""
+DOMAIN=""
+START_STAGE=""
+OUTPUT_DIR=""
+
+if [ $# -eq 0 ]; then
+    show_banner
+    show_help
+    exit 0
+fi
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -i|--install)
+      ACTION="install"
+      shift
+      ;;
+    -c|--check)
+      ACTION="check"
+      shift
+      ;;
+    -f|--full)
+      ACTION="full"
+      shift
+      ;;
+    -s|--stage)
+      ACTION="stage"
+      START_STAGE="$2"
+      shift 2
+      ;;
+    -o|--output)
+      OUTPUT_DIR="$2"
+      shift 2
+      ;;
+    -h|--help)
+      show_banner
+      show_help
+      exit 0
+      ;;
+    *)
+      DOMAIN="$1"
+      shift
+      ;;
+  esac
+done
+
+########################################
+# Execute actions
+########################################
+show_banner
+
+case "$ACTION" in
+  install)
+    info "Starting tool installation..."
+    echo ""
+    
+    if [ ! -f "$SCRIPT_DIR/install.sh" ]; then
+      error "install.sh not found in $SCRIPT_DIR"
+      exit 1
+    fi
+    
+    chmod +x "$SCRIPT_DIR/install.sh"
+    "$SCRIPT_DIR/install.sh"
+    
+    echo ""
+    success "Installation completed!"
+    info "Run: $(basename "$0") --check to verify installation"
+    ;;
+    
+  check)
+    info "Checking tool installation..."
+    echo ""
+    
+    if [ ! -f "$SCRIPT_DIR/check_tools.sh" ]; then
+      error "check_tools.sh not found in $SCRIPT_DIR"
+      exit 1
+    fi
+    
+    chmod +x "$SCRIPT_DIR/check_tools.sh"
+    "$SCRIPT_DIR/check_tools.sh"
+    ;;
+    
+  full)
+    if [ -z "$DOMAIN" ]; then
+      error "Domain required for reconnaissance"
+      echo "Usage: $(basename "$0") --full <domain>"
+      exit 1
+    fi
+    
+    log "Starting full reconnaissance for: $DOMAIN"
+    echo ""
+    
+    # Check tools first
+    if [ -f "$SCRIPT_DIR/check_tools.sh" ]; then
+      info "Verifying tools..."
+      chmod +x "$SCRIPT_DIR/check_tools.sh"
+      if ! "$SCRIPT_DIR/check_tools.sh" >/dev/null 2>&1; then
+        warn "Some tools are missing. Run: $(basename "$0") --install"
+        echo ""
+        read -p "Continue anyway? (y/N): " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+          exit 1
+        fi
+      fi
+    fi
+    
+    # Run reconnaissance
+    chmod +x "$SCRIPT_DIR/recon.sh"
+    
+    CMD="$SCRIPT_DIR/recon.sh $DOMAIN"
+    [ -n "$OUTPUT_DIR" ] && CMD="$CMD --base-dir $OUTPUT_DIR"
+    
+    log "Command: $CMD"
+    echo ""
+    
+    eval "$CMD"
+    ;;
+    
+  stage)
+    if [ -z "$DOMAIN" ]; then
+      error "Domain required for reconnaissance"
+      echo "Usage: $(basename "$0") --stage <stage> <domain>"
+      exit 1
+    fi
+    
+    if [ -z "$START_STAGE" ]; then
+      error "Stage name required"
+      exit 1
+    fi
+    
+    log "Starting reconnaissance from stage: $START_STAGE"
+    log "Target: $DOMAIN"
+    echo ""
+    
+    chmod +x "$SCRIPT_DIR/recon.sh"
+    
+    CMD="$SCRIPT_DIR/recon.sh $DOMAIN --from $START_STAGE"
+    [ -n "$OUTPUT_DIR" ] && CMD="$CMD --base-dir $OUTPUT_DIR"
+    
+    eval "$CMD"
+    ;;
+    
+  *)
+    error "Invalid action or missing arguments"
+    echo ""
+    show_help
+    exit 1
+    ;;
+esac
+
+echo ""
+success "Done!"
+echo ""
