@@ -243,26 +243,125 @@ if should_run http_exploitation; then
     | sort -u > "$BASE_DIR/http_exploitation/high_value_urls.txt" || true
 fi
 
-########################################
-# NUCLEI (UNCHANGED – YOUR ORIGINAL LOGIC)
-########################################
+#####################################
+#NUCLEI SCAN
+#####################################
 if should_run nuclei; then
   log "STAGE: nuclei"
 
+  # Update templates
   nuclei -update-templates -silent || true
 
-  nuclei -l "$BASE_DIR/http_discovery/live_urls.txt" \
-    -t "$NUCLEI_TEMPLATES" \
-    -severity low,medium,high,critical \
-    -c "$NUCLEI_CONCURRENCY" \
-    -rl "$NUCLEI_RATE" \
-    -timeout "$NUCLEI_TIMEOUT" \
-    -silent -no-color \
-    -o "$BASE_DIR/nuclei/ALL_FINDINGS.txt" || true
+  ########################################
+  # Helper function for controlled scans
+  ########################################
+  run_nuclei_scan() {
+    local targets="$1"
+    local templates="$2"
+    local severity="$3"
+    local output="$4"
+    local description="$5"
+    local exclude_tags="${6:-}"
 
-  grep -Ei 'critical|high' "$BASE_DIR/nuclei/ALL_FINDINGS.txt" \
-    | sort -u > "$BASE_DIR/nuclei/CRITICAL_FINDINGS.txt" || true
+    if [[ ! -s "$targets" ]]; then
+      warn "Skipping $description (no targets)"
+      return
+    fi
+
+    log "Starting Nuclei: $description ($(wc -l < "$targets") targets)"
+
+    local cmd=(
+      nuclei
+      -l "$targets"
+      -t "$templates"
+      -severity "$severity"
+      -c "$NUCLEI_CONCURRENCY"
+      -rl "$NUCLEI_RATE"
+      -timeout "$NUCLEI_TIMEOUT"
+      -retries 1
+      -silent
+      -no-color
+      -o "$output"
+    )
+
+    [[ -n "$exclude_tags" ]] && cmd+=(-exclude-tags "$exclude_tags")
+
+    timeout 1800 "${cmd[@]}" 2>"${output%.txt}_error.log" || {
+      warn "Nuclei scan failed or timed out: $description"
+    }
+
+    log "$description finished ($(wc -l < "$output" 2>/dev/null || echo 0) findings)"
+  }
+
+  ########################################
+  # 1. SUBDOMAIN TAKEOVERS (HIGHEST PRIORITY)
+  ########################################
+  run_nuclei_scan \
+    "$BASE_DIR/recon_intel/takeover_candidates.txt" \
+    "$NUCLEI_TEMPLATES/http/takeovers/,$NUCLEI_TEMPLATES/dns/" \
+    "info,low,medium,high,critical" \
+    "$BASE_DIR/nuclei/takeovers.txt" \
+    "Subdomain Takeover Scan"
+
+  ########################################
+  # 2. HIGH-VALUE CVEs (ADMIN / API / AUTH)
+  ########################################
+  run_nuclei_scan \
+    "$BASE_DIR/http_exploitation/high_value_urls.txt" \
+    "$NUCLEI_TEMPLATES/cves/,$NUCLEI_TEMPLATES/vulnerabilities/,$NUCLEI_TEMPLATES/exposures/" \
+    "high,critical" \
+    "$BASE_DIR/nuclei/high_value_cves.txt" \
+    "High-Value CVE Scan"
+
+  ########################################
+  # 3. EXPOSED PANELS & DEFAULT LOGINS
+  ########################################
+  run_nuclei_scan \
+    "$BASE_DIR/http_discovery/live_urls.txt" \
+    "$NUCLEI_TEMPLATES/exposed-panels/,$NUCLEI_TEMPLATES/default-logins/" \
+    "medium,high,critical" \
+    "$BASE_DIR/nuclei/exposed_panels.txt" \
+    "Exposed Panels & Default Logins"
+
+  ########################################
+  # 4. MISCONFIGURATIONS (SAFE ONLY)
+  ########################################
+  run_nuclei_scan \
+    "$BASE_DIR/http_discovery/live_urls.txt" \
+    "$NUCLEI_TEMPLATES/misconfiguration/,$NUCLEI_TEMPLATES/exposures/" \
+    "medium,high,critical" \
+    "$BASE_DIR/nuclei/misconfigurations.txt" \
+    "Misconfiguration Scan" \
+    "dos,fuzz,intrusive"
+
+  ########################################
+  # 5. FULL SCAN (ONLY IF SCOPE IS SMALL)
+  ########################################
+  LIVE_COUNT=$(wc -l < "$BASE_DIR/http_discovery/live_urls.txt" 2>/dev/null || echo 0)
+
+  if [[ "$LIVE_COUNT" -gt 0 && "$LIVE_COUNT" -le 500 ]]; then
+    run_nuclei_scan \
+      "$BASE_DIR/http_discovery/live_urls.txt" \
+      "$NUCLEI_TEMPLATES/" \
+      "low,medium,high,critical" \
+      "$BASE_DIR/nuclei/comprehensive.txt" \
+      "Comprehensive Scan" \
+      "dos,fuzz,intrusive"
+  else
+    log "Skipping comprehensive scan ($LIVE_COUNT targets)"
+  fi
+
+  ########################################
+  # AGGREGATE HIGH & CRITICAL FINDINGS
+  ########################################
+  {
+    grep -Ei 'critical|high' "$BASE_DIR/nuclei/"*.txt 2>/dev/null
+  } | sort -u > "$BASE_DIR/nuclei/CRITICAL_FINDINGS.txt" || true
+
+  log "Nuclei stage completed"
+  log "Critical findings: $(wc -l < "$BASE_DIR/nuclei/CRITICAL_FINDINGS.txt" 2>/dev/null || echo 0)"
 fi
+
 
 ########################################
 # FFUF
