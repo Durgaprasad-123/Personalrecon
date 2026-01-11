@@ -17,8 +17,8 @@ from telegram.ext import (
 # =========================
 # CONFIG
 # =========================
-TOKEN = "8504246528:AAEsxj938hFkYtocrdpS3cekFjMaJ2AhE94"
-ALLOWED_USER_ID = 1699474723  # your Telegram numeric ID
+TOKEN = "xxxxxxxxxxxxxxxxxxxxxxxxxx"
+ALLOWED_USER_ID = xxxxxxxxx  # your Telegram numeric ID
 
 BASE_DIR = Path("/home/ubuntu/ai-recon-bot")
 OUTPUT_DIR = BASE_DIR / "output"
