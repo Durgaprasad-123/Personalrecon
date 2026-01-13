@@ -73,13 +73,13 @@ Examples:
   $(basename "$0") --check
 
   # Full reconnaissance
-  $(basename "$0") --full example.com
+  $(basename "$0") example.com 
 
   # Start from specific stage
-  $(basename "$0") --stage nuclei example.com
+  $(basename "$0")  example.com --from nuclei
 
   # Custom output directory
-  $(basename "$0") --full example.com --output /tmp/recon
+  $(basename "$0") example.com --output /tmp/recon
 
 Quick Start:
   1. $(basename "$0") --install        # Install tools
