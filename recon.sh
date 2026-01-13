@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 set -Eeuo pipefail
 
@@ -112,21 +112,32 @@ cat <<EOF
 Usage:
   $(basename "$0") <domain> [--from <stage>] [--base-dir <path>] [--no-color]
 
+Options:
+  --from <stage>     Start from a specific stage
+  --base-dir <path>  Set custom output directory
+  --no-color         Disable colors for the output & logs on the TTY
+
 Stages:
-  passive
-  bruteforce
-  permutations
-  dns
-  recon_intel
-  http_discovery
-  http_exploitation
-  nuclei
+  passive            - Passive subdomain enumeration
+  bruteforce         - DNS bruteforce with wordlists
+  permutations       - Generate domain permutations
+  dns                - DNS resolution and validation
+  recon_intel        - Cloud assets and takeover detection
+  http_discovery     - HTTP probing and tech detection
+  http_exploitation  - High-value target identification
+  nuclei             - Vulnerability scanning
+  ffuf               - Fuzzing (optional)
 
 Example:
   ./recon.sh example.com
   ./recon.sh example.com --from passive
-  ./recon.sh example.com --base-dir bot   #--base-dir is nothing about output file to store
-  ./recon.sh example.com --no-color       #--no-color is to disable to colorful output
+  ./recon.sh example.com --base-dir /custom/path      
+  ./recon.sh example.com --no-color                   
+
+Output:
+  Results are saved to: output/<domain>/
+  Final report: output/<domain>/FINAL_REPORT.txt
+  Logs: output/<domain>/logs/recon.log
 EOF
 }
 
@@ -144,7 +155,7 @@ cleanup() {
   echo >&2
   warn "Interrupted during stage: $CURRENT_STAGE"
   warn "Partial results saved in: $BASE_DIR"
-  echo "[✗] Recon aborted by user (CTRL+C)"
+  echo "$RED[x] Recon aborted by user (CTRL+C)"
   exit 130
 }
 
@@ -179,7 +190,7 @@ init_colors
 ########################################
 # STAGES
 ########################################
-STAGES=(passive bruteforce permutations dns recon_intel http_discovery http_exploitation nuclei)
+STAGES=(passive bruteforce permutations dns recon_intel http_discovery http_exploitation nuclei ffuf)
 
 stage_exists() {
   for s in "${STAGES[@]}"; do
@@ -209,18 +220,21 @@ should_run() {
 ########################################
 HTTP_THREADS=50
 HTTP_RATE=120
+NUCLEI_CONCURRENCY=30
+NUCLEI_RATE=200
+NUCLEI_TIMEOUT=10
 
-#@TODO
-RESOLVERS="$HOME/Documents/BugBounty/ReconScripts/resolvers.txt"
 
+RESOLVERS="$HOME/resolvers.txt"
 WORDLIST="$HOME/wordlists/dns.txt"
 ALTDNS_WORDLIST="$HOME/wordlists/altdns_words.txt"
 NUCLEI_TEMPLATES="$HOME/nuclei-templates"
+AMASS_CONFIG="$HOME/.config/amass/config.yaml"
 
 OUTPUT_ROOT="${OUTPUT_ROOT:-$PROJECT_ROOT/output}"
 BASE_DIR="$OUTPUT_ROOT/$domain"
 
-mkdir -p "$BASE_DIR"/{passive,bruteforce,labels,permutations,final,tmp,logs,recon_intel,http_discovery,http_exploitation,nuclei}
+mkdir -p "$BASE_DIR"/{passive,bruteforce,labels,permutations,dns,final,tmp,logs,recon_intel,http_discovery,http_exploitation,nuclei,ffuf}
 
 LOG_FILE="$BASE_DIR/logs/recon.log"
 mkdir -p "$(dirname "$LOG_FILE")"
@@ -326,9 +340,8 @@ if should_run permutations; then
   fi
 
   run_tool "Generating permutations with dnsgen" \
-    dnsgen "$BASE_DIR/final/resolved_fqdns.txt" \
-      | sed "s/\\.$domain\$//" \
-      | sort -u > "$BASE_DIR/permutations/dnsgen_labels.txt"
+    bash -c 'dnsgen "$1" | sed "s/\.$2$//" | sort -u > "$3"' \
+     _ "$BASE_DIR/final/resolved_fqdns.txt" "$domain" "$BASE_DIR/permutations/dnsgen_labels.txt"
 
   info "Extracting service root labels"
   sed "s/\\.$domain\$//" "$BASE_DIR/final/resolved_fqdns.txt" \
@@ -634,6 +647,28 @@ if should_run nuclei; then
 fi
 
 ########################################
+# FFUF
+########################################
+if should_run ffuf; then
+  stage_start ffuf
+
+  # Safeguard to check for the wordlist folder making sure it's not empty
+  if [[ -s "$WORDLIST" ]]; then
+    run_tool "Running ffuf fuzzing" \
+      ffuf -w "$WORDLIST" \
+           -u "https://FUZZ.$domain" \
+           -mc 200 \
+           -o "$BASE_DIR/ffuf/results.json" \
+      || warn "ffuf scan failed"
+  else
+    warn "WORDLIST missing — skipping ffuf"
+  fi
+  stage_end ffuf
+fi
+
+
+
+########################################
 # SUMMARY
 ########################################
 log "================================================"
@@ -646,3 +681,68 @@ log "================================================"
 log "Recon completed for $domain"
 info "Output directory: $BASE_DIR"
 echo "$GREEN [✓] Recon completed for $NC $domain"
+
+########################################
+# FINAL REPORT
+########################################
+FINAL_REPORT="$BASE_DIR/FINAL_REPORT.txt"
+
+info "Generating final reconnaissance report"
+
+{
+  echo "================================================================="
+  echo "Reconnaissance Report"
+  echo "Target Domain : $domain"
+  echo "Date          : $(date '+%F %T')"
+  echo "================================================================="
+  echo ""
+
+  echo "DISCOVERY STATISTICS"
+  echo "-------------------"
+  echo "Resolved Domains       : $(wc -l < "$BASE_DIR/final/final_dns.txt" 2>/dev/null || echo 0)"
+  echo "Live HTTP Services     : $(wc -l < "$BASE_DIR/http_discovery/live_urls.txt" 2>/dev/null || echo 0)"
+  echo "Technologies Detected  : $(wc -l < "$BASE_DIR/http_discovery/technologies.txt" 2>/dev/null || echo 0)"
+  echo ""
+
+  echo "HIGH-VALUE TARGETS"
+  echo "------------------"
+  echo "Admin/API/Auth Endpoints: $(wc -l < "$BASE_DIR/http_exploitation/high_value_urls.txt" 2>/dev/null || echo 0)"
+  if [[ -s "$BASE_DIR/http_exploitation/high_value_urls.txt" ]]; then
+    echo ""
+    echo "Top Endpoints:"
+    head -20 "$BASE_DIR/http_exploitation/high_value_urls.txt"
+  else
+    echo "None identified"
+  fi
+  echo ""
+
+  echo "SECURITY FINDINGS"
+  echo "-----------------"
+  echo "Critical / High Severity Issues: $(wc -l < "$BASE_DIR/nuclei/CRITICAL_FINDINGS.txt" 2>/dev/null || echo 0)"
+  if [[ -s "$BASE_DIR/nuclei/CRITICAL_FINDINGS.txt" ]]; then
+    echo ""
+    echo "Top Findings:"
+    head -20 "$BASE_DIR/nuclei/CRITICAL_FINDINGS.txt"
+  else
+    echo "No critical findings detected"
+  fi
+  echo ""
+
+  echo "CLOUD & INFRASTRUCTURE"
+  echo "---------------------"
+  echo "Cloud-hosted Assets      : $(wc -l < "$BASE_DIR/recon_intel/cloud_assets.txt" 2>/dev/null || echo 0)"
+  echo "Potential Takeovers      : $(wc -l < "$BASE_DIR/recon_intel/takeover_candidates.txt" 2>/dev/null || echo 0)"
+  echo ""
+
+  echo "OUTPUT"
+  echo "------"
+  echo "Results Directory : $BASE_DIR"
+  echo "Log File          : $LOG_FILE"
+  echo ""
+
+  echo "================================================================="
+  echo "End of Report"
+  echo "================================================================="
+} > "$FINAL_REPORT"
+
+info "Final report written to: $FINAL_REPORT"
