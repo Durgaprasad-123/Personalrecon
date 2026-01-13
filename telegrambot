@@ -41,6 +41,8 @@ SUBPROC_ENV = {
     **os.environ,
     "HOME": "/home/ubuntu",
     "PATH": "/snap/bin:/home/ubuntu/go/bin:/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin",
+    "TERM": "xterm-256color",        # prevents TERM-not-set errors
+    "COLORTERM": "truecolor",        # optional
 }
 
 logging.basicConfig(level=logging.INFO)
