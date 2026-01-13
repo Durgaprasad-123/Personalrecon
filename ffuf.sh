@@ -1,348 +1,347 @@
-#!/usr/bin/env python3
-import asyncio
-import os
-import time
-import uuid
-import shutil
-import logging
-from pathlib import Path
+#!/usr/bin/env bash
+set -Eeuo pipefail
 
-from telegram import Update
-from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    ContextTypes,
-)
+########################################
+# Colors for output
+########################################
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
 
-from telethon import TelegramClient
+log() { echo -e "${BLUE}[*]${NC} $*"; }
+success() { echo -e "${GREEN}[✓]${NC} $*"; }
+warn() { echo -e "${YELLOW}[!]${NC} $*"; }
+error() { echo -e "${RED}[✗]${NC} $*"; }
 
-# =====================================================
-# CONFIG
-# =====================================================
+########################################
+# USAGE
+########################################
+show_help() {
+cat <<EOF
+Usage:
+  $(basename "$0") <targets_file> [options]
 
-BOT_TOKEN = "BOT-TOKEN"
-ALLOWED_USER_ID = USER---ID  # your Telegram numeric ID
+Options:
+  -w, --wordlist <path>    Custom wordlist (can specify multiple times)
+  -t, --threads <num>      Number of threads (default: 30)
+  -o, --output <dir>       Output directory (default: ffuf-results)
+  --timeout <sec>          Request timeout (default: 10)
+  --max-targets <num>      Maximum targets to scan (default: 100)
+  -h, --help               Show this help
 
-# Telethon (for large uploads)
-API_ID = xxxxxxxxx
-API_HASH = "API_HASH_ID"
-SESSION_NAME = "recon_user"
-CHANNEL_ID = -100123456789 
+Examples:
+  $(basename "$0") httpx_full.txt
+  $(basename "$0") httpx_full.txt -w /path/to/custom.txt
+  $(basename "$0") httpx_full.txt --threads 50 --max-targets 50
 
-# Paths
-BASE_DIR = Path("/home/ubuntu/ai-recon-bot")
-RECON_SCRIPT = BASE_DIR / "recon/recon.sh"
-FFUF_SCRIPT = BASE_DIR / "recon/ffuf.sh"
-OUTPUT_DIR = BASE_DIR / "output"
-OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-
-# Subprocess environment
-SUBPROC_ENV = {
-    **os.environ,
-    "HOME": "/home/ubuntu",
-    "PATH": "/snap/bin:/home/ubuntu/go/bin:/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin",
+Default wordlists used if none specified:
+  - raft-small-directories.txt
+  - raft-medium-directories.txt
+  - api-endpoints.txt
+EOF
 }
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("recon-bot")
+########################################
+# ARGUMENTS
+########################################
+if [ $# -lt 1 ]; then
+  show_help
+  exit 1
+fi
 
-RUNNING_JOBS = {}
+TARGETS_FILE="$1"
+shift
 
-# =====================================================
-# HELPERS
-# =====================================================
+USER_WORDLISTS=()
+THREADS=30
+TIMEOUT=10
+MAX_TARGETS=100
+OUTPUT_DIR="ffuf-results"
+USER_AGENT="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"
 
-def normalize_domain(domain: str) -> str:
-    domain = domain.strip().lower()
-    domain = domain.replace("https://", "").replace("http://", "")
-    domain = domain.split("/")[0]
-    if domain.startswith("www."):
-        domain = domain[4:]
-    return domain
+# Parse arguments
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -w|--wordlist)
+      USER_WORDLISTS+=("$2")
+      shift 2
+      ;;
+    -t|--threads)
+      THREADS="$2"
+      shift 2
+      ;;
+    -o|--output)
+      OUTPUT_DIR="$2"
+      shift 2
+      ;;
+    --timeout)
+      TIMEOUT="$2"
+      shift 2
+      ;;
+    --max-targets)
+      MAX_TARGETS="$2"
+      shift 2
+      ;;
+    -h|--help)
+      show_help
+      exit 0
+      ;;
+    *)
+      warn "Unknown option: $1"
+      show_help
+      exit 1
+      ;;
+  esac
+done
 
-def format_time(seconds: int) -> str:
-    h = seconds // 3600
-    m = (seconds % 3600) // 60
-    s = seconds % 60
-    if h:
-        return f"{h}h {m}m {s}s"
-    if m:
-        return f"{m}m {s}s"
-    return f"{s}s"
-
-# =====================================================
-# TELETHON
-# =====================================================
-
-telethon_client = TelegramClient(
-    SESSION_NAME,
-    API_ID,
-    API_HASH,
-    sequential_updates=True,
+########################################
+# Default curated wordlists
+########################################
+DEFAULT_WORDLISTS=(
+  "/usr/share/wordlists/SecLists/Discovery/Web-Content/raft-small-directories.txt"
+  "/usr/share/wordlists/SecLists/Discovery/Web-Content/raft-medium-directories.txt"
+  "/usr/share/wordlists/SecLists/Discovery/Web-Content/api/api-endpoints.txt"
+  "/usr/share/wordlists/SecLists/Discovery/Web-Content/common.txt"
 )
 
-UPLOAD_LOCK = asyncio.Semaphore(1)
+########################################
+# Alternative wordlist locations
+########################################
+ALTERNATIVE_LOCATIONS=(
+  "$HOME/wordlists/SecLists/Discovery/Web-Content"
+  "$HOME/SecLists/Discovery/Web-Content"
+  "/opt/SecLists/Discovery/Web-Content"
+)
 
-async def init_telethon():
-    if not telethon_client.is_connected():
-        await telethon_client.start()
-        logger.info("Telethon connected")
+########################################
+# CHECK FFUF
+########################################
+if ! command -v ffuf &>/dev/null; then
+  error "ffuf is not installed"
+  echo ""
+  echo "Install ffuf using:"
+  echo "  go install github.com/ffuf/ffuf/v2@latest"
+  echo ""
+  exit 1
+fi
 
-async def upload_large_file(path: Path) -> str:
-    async with UPLOAD_LOCK:
-        msg = await telethon_client.send_file(
-            CHANNEL_ID,
-            path,
-            caption=path.name,
-        )
-        return f"https://t.me/c/{str(CHANNEL_ID)[4:]}/{msg.id}"
+########################################
+# CHECK TARGET FILE
+########################################
+if [ ! -f "$TARGETS_FILE" ]; then
+  error "Targets file not found: $TARGETS_FILE"
+  exit 1
+fi
 
-# =====================================================
-# COMMANDS
-# =====================================================
+# Count targets
+TARGET_COUNT=$(awk '{print $1}' "$TARGETS_FILE" 2>/dev/null | grep -E '^https?://' | wc -l || echo 0)
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "Recon Bot Online\n\n"
-        "/recon <domain>\n"
-        "/ffuf <domain> [options]\n"
-        "/status <job_id>\n"
-        "/cancel <job_id>"
-    )
+if [ "$TARGET_COUNT" -eq 0 ]; then
+  error "No valid URLs found in $TARGETS_FILE"
+  echo "Expected format: URL [status] [title] [tech]"
+  exit 1
+fi
 
-# =====================================================
-# RECON
-# =====================================================
+log "Found $TARGET_COUNT targets in $TARGETS_FILE"
 
-async def recon(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ALLOWED_USER_ID:
-        return await update.message.reply_text("Not allowed")
+# Limit targets if too many
+if [ "$TARGET_COUNT" -gt "$MAX_TARGETS" ]; then
+  warn "Target count ($TARGET_COUNT) exceeds max ($MAX_TARGETS)"
+  warn "Will scan first $MAX_TARGETS targets only"
+fi
 
-    if not context.args:
-        return await update.message.reply_text("Usage: /recon <domain>")
+########################################
+# WORDLIST SELECTION
+########################################
+if [ ${#USER_WORDLISTS[@]} -gt 0 ]; then
+  WORDLISTS=("${USER_WORDLISTS[@]}")
+  log "Using ${#WORDLISTS[@]} user-provided wordlist(s)"
+else
+  # Try to find default wordlists
+  FOUND_WORDLISTS=()
+  
+  for WL in "${DEFAULT_WORDLISTS[@]}"; do
+    if [ -f "$WL" ]; then
+      FOUND_WORDLISTS+=("$WL")
+    else
+      # Try alternative locations
+      WL_BASENAME=$(basename "$WL")
+      FOUND_ALT=false
+      
+      for ALT_DIR in "${ALTERNATIVE_LOCATIONS[@]}"; do
+        if [ -f "$ALT_DIR/$WL_BASENAME" ]; then
+          FOUND_WORDLISTS+=("$ALT_DIR/$WL_BASENAME")
+          FOUND_ALT=true
+          break
+        fi
+      done
+      
+      if [ "$FOUND_ALT" = false ]; then
+        warn "Wordlist not found: $WL_BASENAME"
+      fi
+    fi
+  done
+  
+  if [ ${#FOUND_WORDLISTS[@]} -eq 0 ]; then
+    error "No wordlists found"
+    echo ""
+    echo "Install SecLists using:"
+    echo "  sudo apt update && sudo apt install seclists"
+    echo ""
+    echo "OR manually:"
+    echo "  git clone https://github.com/danielmiessler/SecLists.git ~/wordlists/SecLists"
+    echo ""
+    echo "OR provide custom wordlists:"
+    echo "  $(basename "$0") $TARGETS_FILE -w /path/to/wordlist.txt"
+    echo ""
+    exit 1
+  fi
+  
+  WORDLISTS=("${FOUND_WORDLISTS[@]}")
+  log "Using ${#WORDLISTS[@]} default wordlist(s)"
+fi
 
-    raw_domain = context.args[0]
-    domain = normalize_domain(raw_domain)
-    extra_args = context.args[1:]
+########################################
+# WORDLIST VALIDATION
+########################################
+for WL in "${WORDLISTS[@]}"; do
+  if [ ! -f "$WL" ]; then
+    error "Wordlist not found: $WL"
+    exit 1
+  fi
+  WL_SIZE=$(wc -l < "$WL")
+  log "  - $(basename "$WL"): $WL_SIZE words"
+done
 
-    job_id = uuid.uuid4().hex[:8]
-    start_time = time.time()
+########################################
+# PREPARE OUTPUT
+########################################
+mkdir -p "$OUTPUT_DIR"
+SUMMARY_FILE="$OUTPUT_DIR/scan_summary.txt"
+: > "$SUMMARY_FILE"
 
-    RUNNING_JOBS[job_id] = {
-        "domain": domain,
-        "start": start_time,
-        "status": "running",
-        "proc": None,
-        "type": "recon",
-    }
+########################################
+# START SCANNING
+########################################
+echo ""
+log "========================================="
+log "Starting ffuf directory fuzzing"
+log "========================================="
+log "Targets: $TARGET_COUNT (max: $MAX_TARGETS)"
+log "Threads: $THREADS"
+log "Timeout: ${TIMEOUT}s"
+log "Output: $OUTPUT_DIR"
+echo ""
 
-    await update.message.reply_text(
-        f"Recon started\n\nDomain: {domain}\nJob ID: {job_id}"
-    )
+SCANNED_COUNT=0
+TOTAL_FINDINGS=0
 
-    async def run_recon():
-        domain_dir = OUTPUT_DIR / domain
-        domain_dir.mkdir(parents=True, exist_ok=True)
+# Extract and scan URLs
+awk '{print $1}' "$TARGETS_FILE" | grep -E '^https?://' | sort -u | head -n "$MAX_TARGETS" | while read -r URL; do
+  ((SCANNED_COUNT++)) || true
+  
+  # Create safe directory name
+  DOMAIN=$(echo "$URL" | sed -e 's|https\?://||g' -e 's|[/:]|_|g' -e 's|_$||')
+  DOMAIN_DIR="$OUTPUT_DIR/$DOMAIN"
+  mkdir -p "$DOMAIN_DIR"
+  
+  log "[$SCANNED_COUNT/$MAX_TARGETS] Scanning: $URL"
+  
+  DOMAIN_FINDINGS=0
+  
+  for WORDLIST in "${WORDLISTS[@]}"; do
+    WL_NAME=$(basename "$WORDLIST" .txt)
+    OUTPUT_FILE="$DOMAIN_DIR/${WL_NAME}.json"
+    
+    echo "    [+] Wordlist: $WL_NAME"
+    
+    # Run ffuf with progress
+    ffuf -u "$URL/FUZZ" \
+      -w "$WORDLIST" \
+      -H "User-Agent: $USER_AGENT" \
+      -t "$THREADS" \
+      -timeout "$TIMEOUT" \
+      -ac \
+      -fc 404,429 \
+      -mc 200,204,301,302,307,401,403,405,500 \
+      -o "$OUTPUT_FILE" \
+      -of json \
+      -s 2>/dev/null || true
+    
+    # Count findings
+    if [ -f "$OUTPUT_FILE" ]; then
+      FINDINGS=$(jq -r '.results | length' "$OUTPUT_FILE" 2>/dev/null || echo 0)
+      if [ "$FINDINGS" -gt 0 ]; then
+        echo "        → Found $FINDINGS paths"
+        ((DOMAIN_FINDINGS+=FINDINGS)) || true
+        ((TOTAL_FINDINGS+=FINDINGS)) || true
+        
+        # Extract interesting findings
+        jq -r '.results[] | "\(.status) \(.url)"' "$OUTPUT_FILE" 2>/dev/null \
+          >> "$DOMAIN_DIR/all_findings.txt" || true
+      else
+        # Remove empty JSON files
+        rm -f "$OUTPUT_FILE"
+      fi
+    fi
+  done
+  
+  # Summary for this domain
+  if [ "$DOMAIN_FINDINGS" -gt 0 ]; then
+    echo "$URL: $DOMAIN_FINDINGS findings" >> "$SUMMARY_FILE"
+    success "Found $DOMAIN_FINDINGS total paths for $URL"
+  else
+    echo "    → No findings"
+  fi
+  
+  echo ""
+done
 
-        cmd = [
-            "/usr/bin/env",
-            "bash",
-            str(RECON_SCRIPT),
-            domain,
-            *extra_args,
-        ]
+########################################
+# CLEANUP & SUMMARY
+########################################
+log "Cleaning up empty files..."
+find "$OUTPUT_DIR" -type f -empty -delete 2>/dev/null || true
+find "$OUTPUT_DIR" -type d -empty -delete 2>/dev/null || true
 
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            cwd=str(BASE_DIR),
-            env=SUBPROC_ENV,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
+echo ""
+log "========================================="
+log "Scan Summary"
+log "========================================="
+log "Total findings: $TOTAL_FINDINGS"
+log "Results saved to: $OUTPUT_DIR"
 
-        RUNNING_JOBS[job_id]["proc"] = proc
+if [ -s "$SUMMARY_FILE" ]; then
+  echo ""
+  log "Findings by target:"
+  cat "$SUMMARY_FILE" | head -20
+  
+  if [ $(wc -l < "$SUMMARY_FILE") -gt 20 ]; then
+    echo "    ... (see $SUMMARY_FILE for full list)"
+  fi
+fi
 
-        await proc.wait()
-        RUNNING_JOBS[job_id]["status"] = "finished"
+echo ""
+success "ffuf scanning completed"
+echo ""
 
-        zip_path = OUTPUT_DIR / f"{domain}_{job_id}.zip"
-        shutil.make_archive(
-            str(zip_path).replace(".zip", ""),
-            "zip",
-            domain_dir,
-        )
+# Create aggregated results
+if [ "$TOTAL_FINDINGS" -gt 0 ]; then
+  log "Creating aggregated results..."
+  
+  # All findings sorted by status
+  find "$OUTPUT_DIR" -name "all_findings.txt" -exec cat {} \; 2>/dev/null \
+    | sort -t' ' -k1,1n | uniq > "$OUTPUT_DIR/ALL_FINDINGS.txt" || true
+  
+  # Extract high-value findings
+  grep -E ' (200|500|403|401) ' "$OUTPUT_DIR/ALL_FINDINGS.txt" 2>/dev/null \
+    | sort -u > "$OUTPUT_DIR/HIGH_VALUE_FINDINGS.txt" || true
+  
+  log "Key files:"
+  log "  - All findings: $OUTPUT_DIR/ALL_FINDINGS.txt"
+  log "  - High-value: $OUTPUT_DIR/HIGH_VALUE_FINDINGS.txt"
+fi
 
-        elapsed = int(time.time() - start_time)
-        size_mb = zip_path.stat().st_size / (1024 * 1024)
-
-        link = await upload_large_file(zip_path)
-
-        await update.message.reply_text(
-            f"Recon completed\n\n"
-            f"Job: {job_id}\n"
-            f"Time: {format_time(elapsed)}\n"
-            f"Size: {size_mb:.2f} MB\n\n"
-            f"Download:\n{link}"
-        )
-
-        RUNNING_JOBS.pop(job_id, None)
-
-    asyncio.create_task(run_recon())
-
-# =====================================================
-# FFUF (FIXED)
-# =====================================================
-
-async def ffuf(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ALLOWED_USER_ID:
-        return await update.message.reply_text("Not allowed")
-
-    if not context.args:
-        return await update.message.reply_text("Usage: /ffuf <domain> [options]")
-
-    raw_domain = context.args[0]
-    domain = normalize_domain(raw_domain)
-    extra_args = context.args[1:]
-
-    domain_dir = OUTPUT_DIR / domain
-    httpx_file = domain_dir / "http_discovery" / "httpx_full.txt"
-
-    if not httpx_file.exists():
-        return await update.message.reply_text(
-            f"httpx_full.txt not found for `{domain}`\n\n"
-            f"Expected:\n{httpx_file}\n\n"
-            "Run /recon first.",
-            parse_mode="Markdown"
-        )
-
-    job_id = uuid.uuid4().hex[:8]
-    start_time = time.time()
-
-    RUNNING_JOBS[job_id] = {
-        "domain": domain,
-        "start": start_time,
-        "status": "running",
-        "proc": None,
-        "type": "ffuf",
-    }
-
-    await update.message.reply_text(
-        f"FFUF started\n\nDomain: {domain}\nJob ID: {job_id}"
-    )
-
-    async def run_ffuf():
-        ffuf_output_dir = domain_dir / "ffuf-results"
-        ffuf_output_dir.mkdir(parents=True, exist_ok=True)
-
-        cmd = [
-            "/usr/bin/env",
-            "bash",
-            str(FFUF_SCRIPT),
-            str(httpx_file),
-            *extra_args,
-            "-o", str(ffuf_output_dir),
-        ]
-
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            cwd=str(BASE_DIR),
-            env=SUBPROC_ENV,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-
-        RUNNING_JOBS[job_id]["proc"] = proc
-        await proc.wait()
-
-        zip_path = OUTPUT_DIR / f"{domain}_ffuf_{job_id}.zip"
-
-        if any(ffuf_output_dir.iterdir()):
-            shutil.make_archive(
-                str(zip_path).replace(".zip", ""),
-                "zip",
-                ffuf_output_dir,
-            )
-
-            elapsed = int(time.time() - start_time)
-            size_mb = zip_path.stat().st_size / (1024 * 1024)
-            link = await upload_large_file(zip_path)
-
-            await update.message.reply_text(
-                f"FFUF completed\n\n"
-                f"Job: {job_id}\n"
-                f"Time: {format_time(elapsed)}\n"
-                f"Size: {size_mb:.2f} MB\n\n"
-                f"Download:\n{link}"
-            )
-        else:
-            await update.message.reply_text("FFUF completed — no findings.")
-
-        RUNNING_JOBS.pop(job_id, None)
-
-    asyncio.create_task(run_ffuf())
-
-# =====================================================
-# STATUS / CANCEL
-# =====================================================
-
-async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        return await update.message.reply_text("Usage: /status <job_id>")
-
-    job = RUNNING_JOBS.get(context.args[0])
-    if not job:
-        return await update.message.reply_text("Job not found")
-
-    elapsed = int(time.time() - job["start"])
-
-    await update.message.reply_text(
-        f"Job: {context.args[0]}\n"
-        f"Type: {job['type']}\n"
-        f"Domain: {job['domain']}\n"
-        f"Status: {job['status']}\n"
-        f"Elapsed: {format_time(elapsed)}"
-    )
-
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ALLOWED_USER_ID:
-        return await update.message.reply_text("Not allowed")
-
-    if not context.args:
-        return await update.message.reply_text("Usage: /cancel <job_id>")
-
-    job = RUNNING_JOBS.get(context.args[0])
-    if not job:
-        return await update.message.reply_text("Job not found")
-
-    proc = job.get("proc")
-    if proc and proc.returncode is None:
-        proc.kill()
-        job["status"] = "cancelled"
-        await update.message.reply_text("Job cancelled")
-
-# =====================================================
-# MAIN
-# =====================================================
-
-async def post_init(app):
-    await init_telethon()
-
-def main():
-    app = (
-        ApplicationBuilder()
-        .token(BOT_TOKEN)
-        .post_init(post_init)
-        .build()
-    )
-
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("recon", recon))
-    app.add_handler(CommandHandler("ffuf", ffuf))
-    app.add_handler(CommandHandler("status", status))
-    app.add_handler(CommandHandler("cancel", cancel))
-
-    logger.info("Recon Bot started")
-    app.run_polling()
-
-if __name__ == "__main__":
-    main()
+echo ""
