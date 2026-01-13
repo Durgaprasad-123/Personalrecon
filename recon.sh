@@ -1,191 +1,134 @@
 #!/usr/bin/env bash
-
 set -Eeuo pipefail
 
 ########################################
-# SCRIPT DIR / PROJECT ROOT (FIXED)
+# COLORS & FORMATTING
+########################################
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+MAGENTA='\033[0;35m'
+CYAN='\033[0;36m'
+BOLD='\033[1m'
+DIM='\033[2m'
+RESET='\033[0m'
+
+########################################
+# SCRIPT DIR / PROJECT ROOT
 ########################################
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-NO_COLOR=false
 
 ########################################
-# DEBUG (shows where it fails if it does)
+# LOGGING FUNCTIONS (DEFINED EARLY)
 ########################################
-#set -x   # uncomment only if debugging
+log() { 
+  echo -e "${BLUE}[*]${RESET} $(date '+%F %T') :: $*"
+}
+
+success() {
+  echo -e "${GREEN}[✓]${RESET} $(date '+%F %T') :: $*"
+}
+
+warn() {
+  echo -e "${YELLOW}[!]${RESET} $(date '+%F %T') :: $*"
+}
+
+error() {
+  echo -e "${RED}[✗]${RESET} $(date '+%F %T') :: $*"
+}
+
+stage_header() {
+  local stage_num="$1"
+  local stage_name="$2"
+  echo ""
+  echo -e "${CYAN}╔════════════════════════════════════════════════════════════════╗${RESET}"
+  echo -e "${CYAN}║${RESET} ${BOLD}Stage $stage_num: $(printf '%-52s' "$stage_name")${RESET}${CYAN}║${RESET}"
+  echo -e "${CYAN}╚════════════════════════════════════════════════════════════════╝${RESET}"
+}
+
+progress() {
+  echo -e "${MAGENTA}  ▸${RESET} $*"
+}
+
+safe_cat(){ for f in "$@"; do [[ -s "$f" ]] && cat "$f"; done; }
 
 ########################################
-# TIMERS & SPINNER
+# CLEANUP ON EXIT
 ########################################
-_timer_start=0
-_spinner_pid=""
-
-start_timer() {
-  _timer_start=$(date +%s)
-}
-
-end_timer() {
-  local end=$(date +%s)
-  echo "$((end - _timer_start))s"
-}
-
-spinner() {
-  local msg="$1"
-  local i=0
-  local sp='|/-\'
-
-  tput civis 2>/dev/null || true      # hide cursor
-
-  while :; do
-    printf '\r%s[+] %s %s%s' "$GREEN" "$msg" "${sp:i++%4:1}" "$NC" >&2
-    sleep 0.1
-  done
-}
-
-start_spinner() {
-  spinner "$1" &
-  _spinner_pid=$!
-  disown
-}
-
-stop_spinner() {
-  if [[ -n "${_spinner_pid:-}" ]]; then
-    kill "$_spinner_pid" 2>/dev/null
-    wait "$_spinner_pid" 2>/dev/null || true
-    _spinner_pid=""
-    printf "\r\033[K" >&2   # clear entire line
-    tput cnorm 2>/dev/null || true   # restore cursor
+cleanup() {
+  local exit_code=$?
+  echo ""
+  if [[ $exit_code -ne 0 ]]; then
+    echo -e "${RED}[✗]${RESET} Script interrupted or failed (exit code: $exit_code)"
+    echo -e "${YELLOW}[i]${RESET} Partial results saved to: ${CYAN}${BASE_DIR:-output}${RESET}"
+    echo -e "${YELLOW}[i]${RESET} Resume with: ${BOLD}$0 ${domain:-<domain>} --from <stage>${RESET}"
   fi
+  [[ -n "${LOG_FILE:-}" ]] && echo "$(date '+%F %T') :: Script ended with exit code: $exit_code" >> "$LOG_FILE" 2>/dev/null || true
 }
 
-run_tool() {
-  local desc="$1"
-  shift
-
-  start_timer
-  start_spinner "$desc"
-
-  if "$@"; then
-    stop_spinner
-    info "$desc completed in $(end_timer)"
-  else
-    stop_spinner
-    warn "$desc failed after $(end_timer)"
-    return 1
-  fi
-}
-
-########################################
-# STAGE HELPERS
-########################################
-stage_start() {
-  CURRENT_STAGE="$1"
-  echo
-  log "==================== STAGE START: $1 ===================="
-}
-
-stage_end() {
-  log "==================== STAGE END: $1 ===================="
-  echo
-}
-
-########################################
-# TUI COLORS (INIT AFTER ARGS)
-########################################
-init_colors() {
-  if [[ -t 1 && "$NO_COLOR" == false ]]; then
-    BLUE=$'\033[1;34m'
-    GREEN=$'\033[1;32m'
-    RED=$'\033[1;31m'
-    YELLOW=$'\033[1;33m'
-    NC=$'\033[0m'
-  else
-    BLUE='' GREEN='' RED='' YELLOW='' NC=''
-  fi
-}
+trap cleanup EXIT
+trap 'exit 130' INT TERM
 
 ########################################
 # HELP
 ########################################
 show_help() {
-cat <<EOF
-Usage:
-  $(basename "$0") <domain> [--from <stage>] [--base-dir <path>] [--no-color]
-
-Options:
-  --from <stage>     Start from a specific stage
-  --base-dir <path>  Set custom output directory
-  --no-color         Disable colors for the output & logs on the TTY
-
-Stages:
-  passive            - Passive subdomain enumeration
-  bruteforce         - DNS bruteforce with wordlists
-  permutations       - Generate domain permutations
-  dns                - DNS resolution and validation
-  recon_intel        - Cloud assets and takeover detection
-  http_discovery     - HTTP probing and tech detection
-  http_exploitation  - High-value target identification
-  nuclei             - Vulnerability scanning
-  ffuf               - Fuzzing (optional)
-
-Example:
-  ./recon.sh example.com
-  ./recon.sh example.com --from passive
-  ./recon.sh example.com --base-dir /custom/path      
-  ./recon.sh example.com --no-color                   
-
-Output:
-  Results are saved to: output/<domain>/
-  Final report: output/<domain>/FINAL_REPORT.txt
-  Logs: output/<domain>/logs/recon.log
-EOF
+  echo -e "${BOLD}${CYAN}════════════════════════════════════════════════════════════════${RESET}"
+  echo -e "${BOLD}  Automated Reconnaissance Script${RESET}"
+  echo -e "${CYAN}════════════════════════════════════════════════════════════════${RESET}"
+  echo ""
+  echo -e "${BOLD}Usage:${RESET}"
+  echo -e "  $(basename "$0") ${GREEN}<domain>${RESET} [${YELLOW}OPTIONS${RESET}]"
+  echo ""
+  echo -e "${BOLD}Options:${RESET}"
+  echo -e "  ${GREEN}--from <stage>${RESET}     Start from a specific stage"
+  echo -e "  ${GREEN}--base-dir <path>${RESET}  Set custom output directory"
+  echo -e "  ${GREEN}--verbose${RESET}          Enable verbose output for debugging"
+  echo ""
+  echo -e "${BOLD}Stages:${RESET}"
+  echo -e "  ${CYAN}passive${RESET}            Passive subdomain enumeration"
+  echo -e "  ${CYAN}bruteforce${RESET}         DNS bruteforce with wordlists"
+  echo -e "  ${CYAN}permutations${RESET}       Generate domain permutations"
+  echo -e "  ${CYAN}dns${RESET}                DNS resolution and validation"
+  echo -e "  ${CYAN}recon_intel${RESET}        Cloud assets and takeover detection"
+  echo -e "  ${CYAN}http_discovery${RESET}     HTTP probing and tech detection"
+  echo -e "  ${CYAN}http_exploitation${RESET}  High-value target identification"
+  echo -e "  ${CYAN}nuclei${RESET}             Vulnerability scanning"
+  echo -e "  ${CYAN}ffuf${RESET}               Fuzzing (optional)"
+  echo ""
+  echo -e "${BOLD}Examples:${RESET}"
+  echo -e "  $(basename "$0") ${GREEN}example.com${RESET} ${YELLOW}--verbose${RESET}"
+  echo -e "  $(basename "$0") ${GREEN}example.com${RESET} ${YELLOW}--from nuclei --verbose${RESET}"
+  echo -e "  $(basename "$0") ${GREEN}example.com${RESET} ${YELLOW}--base-dir /custom/path${RESET}"
+  echo ""
+  echo -e "${BOLD}Output:${RESET}"
+  echo -e "  ${DIM}Results:${RESET}      output/<domain>/"
+  echo -e "  ${DIM}Final Report:${RESET} output/<domain>/FINAL_REPORT.txt"
+  echo -e "  ${DIM}Logs:${RESET}         output/<domain>/logs/recon.log"
+  echo ""
+  echo -e "${CYAN}════════════════════════════════════════════════════════════════${RESET}"
 }
-
-########################################
-# CLEAN EXIT HANDLING
-########################################
-CURRENT_STAGE="init"
-INTERRUPTED=false
-
-cleanup() {
-  stop_spinner
-  printf '\033[0m' >&2    # hard reset colors
-  tput cnorm 2>/dev/null || true
-
-  echo >&2
-  warn "Interrupted during stage: $CURRENT_STAGE"
-  warn "Partial results saved in: $BASE_DIR"
-  echo "$RED[x] Recon aborted by user (CTRL+C)"
-  exit 130
-}
-
-trap cleanup SIGINT SIGTERM
 
 ########################################
 # ARGS
 ########################################
 domain=""
 START_STAGE="all"
-
+VERBOSE=false
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    -h|--help)
-      show_help; exit 0 ;;
-    --from)
-      START_STAGE="$2"; shift 2 ;;
-    --base-dir)
-      OUTPUT_ROOT="$2"; shift 2 ;;
-    --no-color)
-      NO_COLOR=true; shift ;;
-    *)
-      domain="$1"; shift ;;
+    -h|--help) show_help; exit 0 ;;
+    --from) START_STAGE="$2"; shift 2 ;;
+    --base-dir) OUTPUT_ROOT="$2"; shift 2 ;;
+    --verbose) VERBOSE=true; shift ;;
+    *) domain="$1"; shift ;;
   esac
 done
 
 [[ -z "$domain" ]] && { show_help; exit 1; }
-
-init_colors
 
 ########################################
 # STAGES
@@ -193,14 +136,12 @@ init_colors
 STAGES=(passive bruteforce permutations dns recon_intel http_discovery http_exploitation nuclei ffuf)
 
 stage_exists() {
-  for s in "${STAGES[@]}"; do
-    [[ "$s" == "$1" ]] && return 0
-  done
+  for s in "${STAGES[@]}"; do [[ "$s" == "$1" ]] && return 0; done
   return 1
 }
 
 if [[ "$START_STAGE" != "all" ]] && ! stage_exists "$START_STAGE"; then
-  echo "[!] Invalid stage: $START_STAGE"
+  echo -e "${RED}[!]${RESET} Invalid stage: ${YELLOW}$START_STAGE${RESET}"
   exit 1
 fi
 
@@ -216,14 +157,13 @@ should_run() {
 }
 
 ########################################
-# CONFIG (FIXED OUTPUT ROOT)
+# CONFIG
 ########################################
 HTTP_THREADS=50
 HTTP_RATE=120
 NUCLEI_CONCURRENCY=30
 NUCLEI_RATE=200
 NUCLEI_TIMEOUT=10
-
 
 RESOLVERS="$HOME/resolvers.txt"
 WORDLIST="$HOME/wordlists/dns.txt"
@@ -234,306 +174,315 @@ AMASS_CONFIG="$HOME/.config/amass/config.yaml"
 OUTPUT_ROOT="${OUTPUT_ROOT:-$PROJECT_ROOT/output}"
 BASE_DIR="$OUTPUT_ROOT/$domain"
 
-mkdir -p "$BASE_DIR"/{passive,bruteforce,labels,permutations,dns,final,tmp,logs,recon_intel,http_discovery,http_exploitation,nuclei,ffuf}
+mkdir -p "$BASE_DIR"/{passive,bruteforce,permutations,dns,final,tmp,logs,recon_intel,http_discovery,http_exploitation,nuclei,ffuf}
 
 LOG_FILE="$BASE_DIR/logs/recon.log"
-mkdir -p "$(dirname "$LOG_FILE")"
-# redirection and printing the log to the terminal
-exec > >(tee -a "$LOG_FILE") 2>&1
+if [[ "$VERBOSE" == true ]]; then
+  exec > >(tee -a "$LOG_FILE") 2>&1
+else
+  exec >>"$LOG_FILE" 2>&1
+fi
 
-# Just for more verbose on the operations, added info logs
-log(){
-  echo -e "${BLUE}[*] $(date '+%F %T') :: $*${NC}"
-}
-
-info(){
-  echo -e "${GREEN}[+] $(date '+%F %T') :: $*${NC}"
-}
-
-warn(){
-  echo -e "${RED}[!] $(date '+%F %T') :: $*${NC}"
-}
-
-
-safe_cat(){ for f in "$@"; do [[ -s "$f" ]] && cat "$f"; done; }
-
-need(){
-  [[ -s "$1" ]] || { warn "Missing dependency: $1 (run $2)"; exit 1; }
-}
+########################################
+# BANNER
+########################################
+clear
+echo -e "${CYAN}╔════════════════════════════════════════════════════════════════╗${RESET}"
+echo -e "${CYAN}║${RESET}          ${BOLD}${GREEN}AUTOMATED RECONNAISSANCE FRAMEWORK${RESET}                ${CYAN}║${RESET}"
+echo -e "${CYAN}╠════════════════════════════════════════════════════════════════╣${RESET}"
+echo -e "${CYAN}║${RESET}  Target: ${YELLOW}${BOLD}$(printf '%-50s' "$domain")${RESET} ${CYAN}║${RESET}"
+echo -e "${CYAN}║${RESET}  Output: ${DIM}$(printf '%-50s' "$BASE_DIR")${RESET} ${CYAN}║${RESET}"
+echo -e "${CYAN}║${RESET}  Start:  ${GREEN}$(printf '%-50s' "$START_STAGE")${RESET} ${CYAN}║${RESET}"
+echo -e "${CYAN}╚════════════════════════════════════════════════════════════════╝${RESET}"
+echo ""
 
 ########################################
 # TOOL CHECKS
 ########################################
-for t in subfinder assetfinder amass puredns dnsgen altdns httpx nuclei awk sed grep sort cut; do
-  command -v "$t" >/dev/null || { echo "[!] Missing tool: $t"; exit 1; }
+log "Checking required tools..."
+MISSING_TOOLS=()
+
+for t in subfinder assetfinder amass puredns dnsgen altdns httpx nuclei jq awk sed grep sort cut; do
+  if ! command -v "$t" >/dev/null 2>&1; then
+    MISSING_TOOLS+=("$t")
+  fi
 done
+
+if [[ ${#MISSING_TOOLS[@]} -gt 0 ]]; then
+  echo ""
+  error "Missing required tools: ${MISSING_TOOLS[*]}"
+  exit 1
+fi
+
+success "All required tools are installed"
 
 ########################################
 # PASSIVE
 ########################################
-# Added some informative logs and removed all the 'true' statement and replaced them with the warnings for verbose
 if should_run passive; then
-  stage_start passive
-
-  info "Running subfinder..."
-  subfinder -d "$domain" -silent -all > "$BASE_DIR/passive/subfinder.txt" || warn "subfinder failed !"
+  stage_header "1/9" "PASSIVE ENUMERATION"
   
-  info "Running assetfinder..."
-  assetfinder --subs-only "$domain" > "$BASE_DIR/passive/assetfinder.txt" || warn "assetfinder failed !"
+  progress "Running subfinder..."
+  subfinder -d "$domain" -silent -all > "$BASE_DIR/passive/subfinder.txt" || true
+  echo -e "    ${DIM}Found: ${GREEN}$(wc -l < "$BASE_DIR/passive/subfinder.txt" 2>/dev/null || echo 0)${RESET} ${DIM}domains${RESET}"
   
-  info "Running amass passive..."
-  amass enum -passive -d "$domain" -o "$BASE_DIR/passive/amass.txt" || warn "amass failed !"
+  progress "Running assetfinder..."
+  assetfinder --subs-only "$domain" > "$BASE_DIR/passive/assetfinder.txt" || true
+  echo -e "    ${DIM}Found: ${GREEN}$(wc -l < "$BASE_DIR/passive/assetfinder.txt" 2>/dev/null || echo 0)${RESET} ${DIM}domains${RESET}"
+  
+  progress "Running amass (passive)..."
+  amass enum -passive -d "$domain" -o "$BASE_DIR/passive/amass.txt" || true
+  echo -e "    ${DIM}Found: ${GREEN}$(wc -l < "$BASE_DIR/passive/amass.txt" 2>/dev/null || echo 0)${RESET} ${DIM}domains${RESET}"
 
-  safe_cat "$BASE_DIR/passive/"*.txt | sort -u \
-    > "$BASE_DIR/passive/passive_seeds.txt"
-
-  log "Passive results: $(wc -l < "$BASE_DIR/passive/passive_seeds.txt" 2>/dev/null || echo 0)"
-  stage_end passive
+  safe_cat "$BASE_DIR/passive/"*.txt | sort -u > "$BASE_DIR/passive/passive_seeds.txt"
+  success "Passive enumeration complete: ${BOLD}$(wc -l < "$BASE_DIR/passive/passive_seeds.txt" || echo 0)${RESET} unique domains"
 fi
 
 ########################################
 # BRUTEFORCE
 ########################################
 if should_run bruteforce; then
-  stage_start bruteforce
+  stage_header "2/9" "DNS BRUTEFORCE"
+  
+  progress "Running puredns bruteforce..."
+  puredns bruteforce "$WORDLIST" "$domain" -r "$RESOLVERS" -w "$BASE_DIR/bruteforce/raw.txt"
+  
+  progress "Resolving and filtering wildcards..."
+  puredns resolve "$BASE_DIR/bruteforce/raw.txt" -r "$RESOLVERS" \
+    --wildcard-tests 3 -w "$BASE_DIR/bruteforce/resolved.txt" || true
 
-  [[ -s "$WORDLIST" ]] || { warn "WORDLIST missing: $WORDLIST"; exit 1; }
-  [[ -s "$RESOLVERS" ]] || { warn "RESOLVERS missing: $RESOLVERS"; exit 1; }
-
-  run_tool "Running puredns bruteforce" \
-    puredns bruteforce "$WORDLIST" "$domain" \
-      -r "$RESOLVERS" \
-      --rate-limit-trusted 400 \
-      -w "$BASE_DIR/bruteforce/raw.txt" \
-      --quiet
-
-  if [[ -s "$BASE_DIR/bruteforce/raw.txt" ]]; then
-    run_tool "Resolving bruteforce results" \
-      puredns resolve "$BASE_DIR/bruteforce/raw.txt" \
-        -r "$RESOLVERS" \
-        --wildcard-tests 3 \
-        -w "$BASE_DIR/bruteforce/resolved.txt" \
-        --quiet
-  else
-    warn "No bruteforce output generated — skipping resolve"
-  fi
-
-  info "Merging passive and bruteforce results"
   safe_cat "$BASE_DIR/passive/passive_seeds.txt" \
            "$BASE_DIR/bruteforce/resolved.txt" \
     | sort -u > "$BASE_DIR/final/resolved_fqdns.txt"
-
-  info "Resolved FQDNs: $(wc -l < "$BASE_DIR/final/resolved_fqdns.txt" 2>/dev/null || echo 0)"
-  stage_end bruteforce
+  
+  success "Bruteforce complete: ${BOLD}$(wc -l < "$BASE_DIR/final/resolved_fqdns.txt" || echo 0)${RESET} total domains"
 fi
-
 
 ########################################
 # PERMUTATIONS
 ########################################
 if should_run permutations; then
-  stage_start permutations
-
-  if [[ ! -s "$BASE_DIR/final/resolved_fqdns.txt" ]]; then
-    warn "resolved_fqdns.txt missing — run bruteforce first"
-    exit 1
-  fi
-
-  run_tool "Generating permutations with dnsgen" \
-    bash -c 'dnsgen "$1" | sed "s/\.$2$//" | sort -u > "$3"' \
-     _ "$BASE_DIR/final/resolved_fqdns.txt" "$domain" "$BASE_DIR/permutations/dnsgen_labels.txt"
-
-  info "Extracting service root labels"
-  sed "s/\\.$domain\$//" "$BASE_DIR/final/resolved_fqdns.txt" \
-    | cut -d'.' -f1 | sort -u \
-    > "$BASE_DIR/labels/service_roots.txt"
-
-  if [[ -s "$ALTDNS_WORDLIST" && -s "$BASE_DIR/labels/service_roots.txt" ]]; then
-    run_tool "Generating permutations with altdns" \
-      altdns -i "$BASE_DIR/labels/service_roots.txt" \
-             -w "$ALTDNS_WORDLIST" \
-             -o "$BASE_DIR/permutations/altdns_labels.txt" \
-             -t 507
-    warn "Skipping altdns (missing wordlist or service roots)"
-    : > "$BASE_DIR/permutations/altdns_labels.txt"
-  fi
-
-  info "Normalizing and validating labels"
-  {
-    [[ -s "$BASE_DIR/permutations/dnsgen_labels.txt" ]] && cat "$BASE_DIR/permutations/dnsgen_labels.txt"
-    [[ -s "$BASE_DIR/permutations/altdns_labels.txt" ]] && cat "$BASE_DIR/permutations/altdns_labels.txt"
-  } | grep -E '^[a-z0-9][a-z0-9-]{1,30}$' \
-    | sort -u > "$BASE_DIR/permutations/all_labels.txt"
-
-  if [[ -s "$BASE_DIR/permutations/all_labels.txt" ]]; then
-    info "Building permutation FQDN list"
-    sed "s/$/.$domain/" "$BASE_DIR/permutations/all_labels.txt" \
-      > "$BASE_DIR/permutations/fqdns.txt"
-
-    info "Permutation FQDNs: $(wc -l < "$BASE_DIR/permutations/fqdns.txt")"
-  else
-    warn "No valid permutation labels generated"
-  fi
-  stage_end permutations
+  stage_header "3/9" "DOMAIN PERMUTATIONS"
+  
+  progress "Generating permutations with dnsgen..."
+  dnsgen "$BASE_DIR/final/resolved_fqdns.txt" > "$BASE_DIR/permutations/dnsgen_raw.txt" || true
+  
+  progress "Filtering in-scope permutations..."
+  grep -E "\.$domain$" "$BASE_DIR/permutations/dnsgen_raw.txt" \
+    | sort -u > "$BASE_DIR/permutations/all_permutations.txt"
+  
+  success "Generated ${BOLD}$(wc -l < "$BASE_DIR/permutations/all_permutations.txt" || echo 0)${RESET} permutations"
 fi
 
 ########################################
 # DNS
 ########################################
 if should_run dns; then
-  stage_start dns
-
-  info "Preparing DNS input list"
+  stage_header "4/9" "DNS RESOLUTION"
+  
+  progress "Combining all DNS candidates..."
   safe_cat "$BASE_DIR/final/resolved_fqdns.txt" \
-           "$BASE_DIR/permutations/fqdns.txt" \
-    | sort -u > "$BASE_DIR/final/final_dns.txt"
+           "$BASE_DIR/permutations/all_permutations.txt" \
+    | sort -u > "$BASE_DIR/dns/all_candidates.txt"
+  echo -e "    ${DIM}Total candidates: ${YELLOW}$(wc -l < "$BASE_DIR/dns/all_candidates.txt" || echo 0)${RESET}"
 
-  if [[ -s "$BASE_DIR/final/final_dns.txt" ]]; then
-    run_tool "Resolving DNS with puredns" \
-      puredns resolve "$BASE_DIR/final/final_dns.txt" \
-        -r "$RESOLVERS" \
-        --wildcard-tests 5 \
-        --write-massdns "$BASE_DIR/tmp/puredns.snl"
-  else
-    warn "No DNS names to resolve — skipping puredns"
-  fi
+  progress "Resolving with puredns (wildcard filtering enabled)..."
+  puredns resolve "$BASE_DIR/dns/all_candidates.txt" \
+    -r "$RESOLVERS" --wildcard-tests 5 \
+    --write-massdns "$BASE_DIR/tmp/puredns.snl" || true
 
-  if [[ -s "$BASE_DIR/tmp/puredns.snl" ]]; then
-    info "Extracting DNS records"
-    awk '{print $1, $3}' "$BASE_DIR/tmp/puredns.snl" \
-      | sed 's/\.$//' | sort -u \
-      > "$BASE_DIR/final/dns_records.txt"
-
-    info "Building DNS → IP map"
-    awk '{print $1, $3}' "$BASE_DIR/tmp/puredns.snl" \
-      | sed 's/\.$//' | sort -u \
-      > "$BASE_DIR/final/dns_ip_map.txt"
-  else
-    warn "No puredns output found — DNS records not generated"
-  fi
-  stage_end dns
+  awk '{print $1}' "$BASE_DIR/tmp/puredns.snl" | sed 's/\.$//' \
+    | sort -u > "$BASE_DIR/dns/resolved_domains.txt"
+  
+  success "Final resolved domains: ${BOLD}${GREEN}$(wc -l < "$BASE_DIR/dns/resolved_domains.txt" || echo 0)${RESET}"
 fi
-
 
 ########################################
 # RECON INTEL
 ########################################
 if should_run recon_intel; then
-  stage_start recon_intel
+  stage_header "5/9" "RECONNAISSANCE INTELLIGENCE"
+  
+  progress "Identifying cloud-hosted assets..."
+  grep -Eai 'amazonaws|s3\..*\.amazonaws|s3-|s3-website|elasticbeanstalk|cloudfront\.net|azurewebsites\.net|blob\.core\.windows|cloudapp\.azure|azure-api\.net|cloudflare|fastly|googleusercontent|appspot\.com|herokuapp\.com|github\.io|gitlab\.io|netlify\.app|vercel\.app|surge\.sh|wordpress\.com|wixsite\.com|webflow\.io' \
+    "$BASE_DIR/dns/resolved_domains.txt" \
+    > "$BASE_DIR/recon_intel/cloud_assets.txt" || true
+  echo -e "    ${DIM}Cloud assets: ${CYAN}$(wc -l < "$BASE_DIR/recon_intel/cloud_assets.txt" 2>/dev/null || echo 0)${RESET}"
 
-  if [[ -s "$BASE_DIR/final/dns_records.txt" ]]; then
-    info "Extracting cloud assets"
-    grep -Eai 'amazonaws|azure|cloudfront|googleusercontent' \
-      "$BASE_DIR/final/dns_records.txt" \
-      > "$BASE_DIR/recon_intel/cloud_assets.txt" \
-      || warn "No cloud assets identified"
-
-    info "Extracting takeover candidates"
-    grep -Eai 'herokuapp|github.io|s3.amazonaws.com|fastly.net|azurewebsites.net' \
-      "$BASE_DIR/final/dns_records.txt" \
-      | awk '{print $1}' \
-      > "$BASE_DIR/recon_intel/takeover_candidates.txt" \
-      || warn "No takeover candidates identified"
-  else
-    warn "dns_records.txt missing — skipping recon_intel"
+  progress "Detecting potential subdomain takeover candidates..."
+  
+  # Check DNS records for takeover indicators
+  if [[ -s "$BASE_DIR/tmp/puredns.snl" ]]; then
+    grep -Eai 'CNAME.*\.(azurewebsites\.net|cloudapp\.net|azure-api\.net|trafficmanager\.net|blob\.core\.windows\.net|redis\.cache\.windows\.net|azurehdinsight\.net|azureedge\.net|azurefd\.net|azurecontainer\.io|database\.windows\.net|azuredatalakestore\.net|search\.windows\.net|core\.windows\.net|servicebus\.windows\.net|visualstudio\.com)|amazonaws\.com|s3.*\.amazonaws|elasticbeanstalk|cloudfront\.net|herokuapp\.com|herokussl\.com|herokudns\.com|github\.io|gitlab\.io|pantheonsite\.io|zendesk\.com|ghost\.io|fastly\.net|helpjuice\.com|helpscoutdocs\.com|desk\.com|statuspage\.io|uservoice\.com|surge\.sh|tumblr\.com|shopify\.com|bigcartel\.com|campaignmonitor\.com|acquia-sites\.com|bitbucket\.io|cargo\.site|helprace\.com|readme\.io|freshdesk\.com|tictail\.com|unbounce\.com|kinsta\.com|teamwork\.com|smugmug\.com|intercom\.io|webflow\.io|cargocollective\.com|statuspage\.io|wpengine\.com' \
+      "$BASE_DIR/tmp/puredns.snl" | awk '{print $1}' | sed 's/\.$//' | sort -u \
+      > "$BASE_DIR/recon_intel/takeover_dns_candidates.txt" || touch "$BASE_DIR/recon_intel/takeover_dns_candidates.txt"
   fi
-  stage_end recon_intel
+
+  # Use cloud assets as potential candidates
+  cat "$BASE_DIR/recon_intel/cloud_assets.txt" "$BASE_DIR/recon_intel/takeover_dns_candidates.txt" 2>/dev/null \
+    | sort -u > "$BASE_DIR/recon_intel/takeover_candidates.txt"
+
+  # Check HTTP responses for takeover indicators (if httpx already ran)
+  if [[ -s "$BASE_DIR/http_discovery/httpx_full.json" ]]; then
+    progress "Analyzing HTTP responses for takeover signatures..."
+    
+    # 404s on cloud services
+    jq -r 'select(.status_code == 404 and (.url | test("amazonaws|azure|cloudfront|herokuapp|github\\.io|gitlab\\.io"))) | .url' \
+      "$BASE_DIR/http_discovery/httpx_full.json" 2>/dev/null \
+      >> "$BASE_DIR/recon_intel/takeover_candidates.txt" || true
+    
+    # Error messages indicating unclaimed resources
+    jq -r 'select(.title | test("NoSuchBucket|Not Found|404|Repository not found|Heroku.*no such app|There isn\t a GitHub Pages site here|No such app|The specified bucket does not exist|Project not found"; "i")) | .url' \
+      "$BASE_DIR/http_discovery/httpx_full.json" 2>/dev/null \
+      >> "$BASE_DIR/recon_intel/takeover_candidates.txt" || true
+  fi
+
+  # Deduplicate
+  sort -u "$BASE_DIR/recon_intel/takeover_candidates.txt" -o "$BASE_DIR/recon_intel/takeover_candidates.txt" 2>/dev/null || touch "$BASE_DIR/recon_intel/takeover_candidates.txt"
+
+  TAKEOVER_COUNT=$(wc -l < "$BASE_DIR/recon_intel/takeover_candidates.txt" 2>/dev/null || echo 0)
+  if [[ $TAKEOVER_COUNT -gt 0 ]]; then
+    warn "Potential takeover candidates: ${BOLD}${YELLOW}$TAKEOVER_COUNT${RESET}"
+  else
+    success "No obvious takeover candidates detected"
+  fi
 fi
 
 ########################################
 # HTTP DISCOVERY
 ########################################
 if should_run http_discovery; then
-  stage_start http_discovery
+  stage_header "6/9" "HTTP SERVICE DISCOVERY"
 
   HTTPX_JSON="$BASE_DIR/http_discovery/httpx_full.json"
   HTTPX_TXT="$BASE_DIR/http_discovery/httpx_full.txt"
-  LIVE_URLS="$BASE_DIR/http_discovery/live_urls.txt"
 
-  [[ -s "$BASE_DIR/dns/resolved_domains.txt" ]] || {
-    warn "No DNS input for httpx — skipping HTTP discovery"
-    stage_end http_discovery
-    :   # no-op, safely continues
-  }
+  DOMAIN_COUNT=$(wc -l < "$BASE_DIR/dns/resolved_domains.txt" || echo 0)
+  progress "Probing ${YELLOW}$DOMAIN_COUNT${RESET} domains with httpx..."
+  
+  httpx -l "$BASE_DIR/dns/resolved_domains.txt" \
+    -threads "$HTTP_THREADS" \
+    -rate-limit "$HTTP_RATE" \
+    -status-code -title -tech-detect \
+    -follow-redirects \
+    -json -silent \
+    -o "$HTTPX_JSON" || true
 
-  run_tool "Probing HTTP services with httpx" \
-    httpx -l "$BASE_DIR/dns/resolved_domains.txt" \
-      -threads "$HTTP_THREADS" \
-      -rate-limit "$HTTP_RATE" \
-      -status-code -title -tech-detect \
-      -follow-redirects \
-      -json -silent \
-      -o "$HTTPX_JSON" \
-    || warn "httpx probe failed"
-
-  ########################################
-  # POST-PROCESS RESULTS
-  ########################################
   if [[ -s "$HTTPX_JSON" ]]; then
-    info "Parsing httpx results"
-
+    progress "Processing httpx results..."
+    
+    # Validate JSON
+    if ! jq empty "$HTTPX_JSON" 2>/dev/null; then
+      warn "Invalid JSON detected, attempting repair..."
+      grep '^{' "$HTTPX_JSON" | jq empty 2>/dev/null || {
+        error "JSON repair failed, using grep fallback"
+        grep -o '"url":"[^"]*"' "$HTTPX_JSON" | cut -d'"' -f4 > "$HTTPX_TXT"
+        cp "$HTTPX_TXT" "$BASE_DIR/http_discovery/live_urls.txt"
+        touch "$BASE_DIR/http_discovery/"{status_200,status_401,status_403,status_404,status_5xx,technologies,cdn_hosts}.txt
+        success "Basic extraction completed"
+        exit 0
+        }
+    fi
+    
+    # Create formatted output
     jq -r '
       .url as $u
-      | (.status_code // "") as $s
-      | (.title // "") as $t
+      | (.status_code // "N/A") as $s
+      | (.title // "No Title") as $t
       | (.tech // []) as $tech
-      | "\($u) [\($s)] [\($t)] [\($tech|join(","))]"
-    ' "$HTTPX_JSON" > "$HTTPX_TXT" || warn "Failed to generate text output"
+      | (.cdn_name // "None") as $cdn
+      | (.content_length // 0) as $len
+      | "\($u) | \($s) | \($t) | Tech: [\($tech|join(", "))] | CDN: \($cdn) | Size: \($len)"
+    ' "$HTTPX_JSON" > "$HTTPX_TXT" 2>"$BASE_DIR/http_discovery/httpx_parse_error.log" || {
+      warn "Formatted output failed"
+      jq -r '"\(.url) [\(.status_code)]"' "$HTTPX_JSON" > "$HTTPX_TXT" 2>/dev/null || true
+    }
 
-    jq -r '.url' "$HTTPX_JSON" | sort -u > "$LIVE_URLS"
+    # Extract URLs and categorize
+    jq -r 'select(.url != null) | .url' "$HTTPX_JSON" 2>/dev/null | sort -u \
+      > "$BASE_DIR/http_discovery/live_urls.txt" || {
+      warn "jq failed, using grep fallback"
+      grep -o '"url":"[^"]*"' "$HTTPX_JSON" | cut -d'"' -f4 | sort -u \
+        > "$BASE_DIR/http_discovery/live_urls.txt"
+    }
 
-    jq -r 'select(.status_code==200) | .url' "$HTTPX_JSON" \
-      > "$BASE_DIR/http_discovery/status_200.txt"
+    # Status code categorization
+    jq -r 'select(.status_code == 200) | .url' "$HTTPX_JSON" 2>/dev/null \
+      > "$BASE_DIR/http_discovery/status_200.txt" || touch "$BASE_DIR/http_discovery/status_200.txt"
+    jq -r 'select(.status_code == 401) | .url' "$HTTPX_JSON" 2>/dev/null \
+      > "$BASE_DIR/http_discovery/status_401.txt" || touch "$BASE_DIR/http_discovery/status_401.txt"
+    jq -r 'select(.status_code == 403) | .url' "$HTTPX_JSON" 2>/dev/null \
+      > "$BASE_DIR/http_discovery/status_403.txt" || touch "$BASE_DIR/http_discovery/status_403.txt"
+    jq -r 'select(.status_code == 404) | .url' "$HTTPX_JSON" 2>/dev/null \
+      > "$BASE_DIR/http_discovery/status_404.txt" || touch "$BASE_DIR/http_discovery/status_404.txt"
+    jq -r 'select(.status_code >= 500) | .url' "$HTTPX_JSON" 2>/dev/null \
+      > "$BASE_DIR/http_discovery/status_5xx.txt" || touch "$BASE_DIR/http_discovery/status_5xx.txt"
 
-    jq -r 'select(.status_code==401) | .url' "$HTTPX_JSON" \
-      > "$BASE_DIR/http_discovery/status_401.txt"
+    # Technologies
+    jq -r '.tech[]?' "$HTTPX_JSON" 2>/dev/null | sort -u \
+      > "$BASE_DIR/http_discovery/technologies.txt" || touch "$BASE_DIR/http_discovery/technologies.txt"
 
-    jq -r 'select(.status_code==403) | .url' "$HTTPX_JSON" \
-      > "$BASE_DIR/http_discovery/status_403.txt"
+    # CDN info
+    jq -r 'select(.cdn_name != null and .cdn_name != "") | "\(.url) - \(.cdn_name)"' "$HTTPX_JSON" 2>/dev/null \
+      > "$BASE_DIR/http_discovery/cdn_hosts.txt" || touch "$BASE_DIR/http_discovery/cdn_hosts.txt"
 
-    jq -r '.tech[]?' "$HTTPX_JSON" | sort -u \
-      > "$BASE_DIR/http_discovery/technologies.txt"
+    # Create summary
+    {
+      echo -e "${CYAN}═══ HTTP Discovery Summary ═══${RESET}"
+      echo ""
+      echo "Status Codes:"
+      echo "  200 OK:          $(wc -l < "$BASE_DIR/http_discovery/status_200.txt" 2>/dev/null || echo 0)"
+      echo "  401 Unauth:      $(wc -l < "$BASE_DIR/http_discovery/status_401.txt" 2>/dev/null || echo 0)"
+      echo "  403 Forbidden:   $(wc -l < "$BASE_DIR/http_discovery/status_403.txt" 2>/dev/null || echo 0)"
+      echo "  404 Not Found:   $(wc -l < "$BASE_DIR/http_discovery/status_404.txt" 2>/dev/null || echo 0)"
+      echo "  5xx Errors:      $(wc -l < "$BASE_DIR/http_discovery/status_5xx.txt" 2>/dev/null || echo 0)"
+      echo ""
+      echo "Technologies Detected:"
+      head -20 "$BASE_DIR/http_discovery/technologies.txt" 2>/dev/null | sed 's/^/  /' || echo "  None"
+      echo ""
+      echo "CDN Distribution:"
+      jq -r '.cdn_name' "$HTTPX_JSON" 2>/dev/null | grep -v '^null$' | sort | uniq -c | sort -rn | sed 's/^/  /' || echo "  None"
+    } > "$BASE_DIR/http_discovery/summary.txt"
+    
+    success "Live HTTP services: ${BOLD}${GREEN}$(wc -l < "$BASE_DIR/http_discovery/live_urls.txt" || echo 0)${RESET}"
+    echo -e "    ${DIM}200 OK: ${GREEN}$(wc -l < "$BASE_DIR/http_discovery/status_200.txt" 2>/dev/null || echo 0)${RESET} ${DIM}| 403: ${YELLOW}$(wc -l < "$BASE_DIR/http_discovery/status_403.txt" 2>/dev/null || echo 0)${RESET} ${DIM}| CDN: ${CYAN}$(wc -l < "$BASE_DIR/http_discovery/cdn_hosts.txt" 2>/dev/null || echo 0)${RESET}"
+    
+    [[ "$VERBOSE" == true ]] && cat "$BASE_DIR/http_discovery/summary.txt"
   else
-    warn "httpx produced no output"
-    : > "$LIVE_URLS"
+    warn "No httpx output generated"
+    : > "$BASE_DIR/http_discovery/live_urls.txt"
   fi
-
-  info "Live HTTP services: $(wc -l < "$LIVE_URLS" 2>/dev/null || echo 0)"
-
-  stage_end http_discovery
 fi
-
 
 ########################################
 # HTTP EXPLOITATION
 ########################################
 if should_run http_exploitation; then
-  stage_start http_exploitation
-
-  if [[ -s "$BASE_DIR/http_discovery/live_urls.txt" ]]; then
-    info "Identifying high-value endpoints"
-    grep -Eai '(admin|api|auth|login|dashboard)' \
-      "$BASE_DIR/http_discovery/live_urls.txt" \
-      | sort -u > "$BASE_DIR/http_exploitation/high_value_urls.txt" \
-      || warn "No high-value URLs found"
+  stage_header "7/9" "HIGH-VALUE TARGET IDENTIFICATION"
+  
+  progress "Identifying admin/api/auth endpoints..."
+  grep -Eai '(admin|api|auth|login|dashboard|panel|console|staging|dev|test|internal|private|portal)' \
+    "$BASE_DIR/http_discovery/live_urls.txt" \
+    | sort -u > "$BASE_DIR/http_exploitation/high_value_urls.txt" || true
+  
+  HV_COUNT=$(wc -l < "$BASE_DIR/http_exploitation/high_value_urls.txt" || echo 0)
+  if [[ $HV_COUNT -gt 0 ]]; then
+    success "High-value targets: ${BOLD}${YELLOW}$HV_COUNT${RESET}"
+    [[ "$VERBOSE" == true ]] && head -10 "$BASE_DIR/http_exploitation/high_value_urls.txt" | sed 's/^/    /'
   else
-    warn "live_urls.txt missing — skipping HTTP exploitation"
+    log "No high-value targets identified"
   fi
-  stage_end http_exploitation
 fi
 
 ########################################
-# NUCLEI
+# NUCLEI SCAN
 ########################################
 if should_run nuclei; then
-  stage_start nuclei
+  stage_header "8/9" "VULNERABILITY SCANNING (NUCLEI)"
+  
+  progress "Updating Nuclei templates..."
+  nuclei -update-templates -silent || true
 
-  info "Updating Nuclei templates"
-  nuclei -update-templates -silent || warn "Template update failed"
-
-  ########################################
-  # Helper: Controlled nuclei scan w/ spinner
-  ########################################
   run_nuclei_scan() {
     local targets="$1"
     local templates="$2"
@@ -542,207 +491,245 @@ if should_run nuclei; then
     local description="$5"
     local exclude_tags="${6:-}"
 
-    [[ ! -s "$targets" ]] && {
+    if [[ ! -s "$targets" ]]; then
       warn "Skipping $description (no targets)"
       return
-    }
+    fi
 
-    local count
-    count=$(wc -l < "$targets" 2>/dev/null || echo 0)
-    info "$description — $count targets"
+    local target_count=$(wc -l < "$targets")
+    progress "Running: ${BOLD}$description${RESET} (${CYAN}$target_count${RESET} targets)"
+    [[ "$VERBOSE" == true ]] && echo -e "    ${DIM}Templates: $templates${RESET}"
+    [[ "$VERBOSE" == true ]] && echo -e "    ${DIM}Severity: $severity${RESET}"
 
     local cmd=(
-      timeout 1800
-      nuclei
-      -l "$targets"
-      -t "$templates"
-      -severity "$severity"
-      -c "$NUCLEI_CONCURRENCY"
-      -rl "$NUCLEI_RATE"
-      -timeout "$NUCLEI_TIMEOUT"
-      -retries 1
-      -silent
-      -no-color
-      -o "$output"
+      nuclei -l "$targets" -t "$templates" -severity "$severity"
+      -c "$NUCLEI_CONCURRENCY" -rl "$NUCLEI_RATE" -timeout "$NUCLEI_TIMEOUT"
+      -retries 1 -o "$output"
     )
 
     [[ -n "$exclude_tags" ]] && cmd+=(-exclude-tags "$exclude_tags")
+    [[ "$VERBOSE" == true ]] && cmd+=(-v -stats)
 
-    run_tool "$description" \
-      "${cmd[@]}" 2>"${output%.txt}_error.log" \
-      || warn "Nuclei scan failed or timed out: $description"
+    timeout 1800 "${cmd[@]}" 2>"${output%.txt}_error.log" || {
+      warn "Scan failed/timed out: $description"
+      [[ -s "${output%.txt}_error.log" ]] && [[ "$VERBOSE" == true ]] && cat "${output%.txt}_error.log"
+    }
 
-    info "$description findings: $(wc -l < "$output" 2>/dev/null || echo 0)"
+    local findings=$(wc -l < "$output" 2>/dev/null || echo 0)
+    if [[ $findings -gt 0 ]]; then
+      echo -e "    ${GREEN}✓${RESET} ${DIM}Findings: ${BOLD}${RED}$findings${RESET}"
+    else
+      echo -e "    ${DIM}✓ No findings${RESET}"
+    fi
   }
 
-  ########################################
-  # 1. SUBDOMAIN TAKEOVERS (HIGHEST PRIORITY)
-  ########################################
+  # 1. Subdomain Takeovers
   run_nuclei_scan \
     "$BASE_DIR/recon_intel/takeover_candidates.txt" \
     "$NUCLEI_TEMPLATES/http/takeovers/,$NUCLEI_TEMPLATES/dns/" \
     "info,low,medium,high,critical" \
     "$BASE_DIR/nuclei/takeovers.txt" \
-    "Subdomain Takeover Scan"
+    "Subdomain Takeover Detection"
 
-  ########################################
-  # 2. HIGH-VALUE CVEs (ADMIN / API / AUTH)
-  ########################################
+  # 2. High-Value CVEs
   run_nuclei_scan \
     "$BASE_DIR/http_exploitation/high_value_urls.txt" \
-    "$NUCLEI_TEMPLATES/cves/,$NUCLEI_TEMPLATES/vulnerabilities/,$NUCLEI_TEMPLATES/exposures/" \
+    "$NUCLEI_TEMPLATES/http/cves/,$NUCLEI_TEMPLATES/http/vulnerabilities/,$NUCLEI_TEMPLATES/http/exposures/" \
     "high,critical" \
     "$BASE_DIR/nuclei/high_value_cves.txt" \
     "High-Value CVE Scan"
 
-  ########################################
-  # 3. EXPOSED PANELS & DEFAULT LOGINS
-  ########################################
+  # 3. Exposed Panels & Default Logins
   run_nuclei_scan \
     "$BASE_DIR/http_discovery/live_urls.txt" \
-    "$NUCLEI_TEMPLATES/exposed-panels/,$NUCLEI_TEMPLATES/default-logins/" \
+    "$NUCLEI_TEMPLATES/http/exposed-panels/,$NUCLEI_TEMPLATES/http/default-logins/" \
     "medium,high,critical" \
     "$BASE_DIR/nuclei/exposed_panels.txt" \
     "Exposed Panels & Default Logins"
 
-  ########################################
-  # 4. MISCONFIGURATIONS (SAFE ONLY)
-  ########################################
+  # 4. Misconfigurations
   run_nuclei_scan \
     "$BASE_DIR/http_discovery/live_urls.txt" \
-    "$NUCLEI_TEMPLATES/misconfiguration/,$NUCLEI_TEMPLATES/exposures/" \
+    "$NUCLEI_TEMPLATES/http/misconfiguration/,$NUCLEI_TEMPLATES/http/exposures/" \
     "medium,high,critical" \
     "$BASE_DIR/nuclei/misconfigurations.txt" \
     "Misconfiguration Scan" \
     "dos,fuzz,intrusive"
 
-  ########################################
-  # 5. FULL SCAN (ONLY IF SCOPE IS SMALL)
-  ########################################
+  # 5. Critical Vulnerabilities (ALWAYS RUN)
+  progress "Running essential security checks..."
+  run_nuclei_scan \
+    "$BASE_DIR/http_discovery/live_urls.txt" \
+    "$NUCLEI_TEMPLATES/http/cves/,$NUCLEI_TEMPLATES/http/vulnerabilities/" \
+    "high,critical" \
+    "$BASE_DIR/nuclei/critical_vulns.txt" \
+    "Critical Vulnerabilities"
+
+  # 6. Conditional Full Scan
   LIVE_COUNT=$(wc -l < "$BASE_DIR/http_discovery/live_urls.txt" 2>/dev/null || echo 0)
 
-  if [[ "$LIVE_COUNT" -gt 0 && "$LIVE_COUNT" -le 500 ]]; then
+  if [[ "$LIVE_COUNT" -gt 0 && "$LIVE_COUNT" -le 100 ]]; then
+    progress "Small target set (${CYAN}$LIVE_COUNT${RESET}) - running comprehensive scan"
     run_nuclei_scan \
       "$BASE_DIR/http_discovery/live_urls.txt" \
       "$NUCLEI_TEMPLATES/" \
       "low,medium,high,critical" \
       "$BASE_DIR/nuclei/comprehensive.txt" \
-      "Comprehensive Scan" \
+      "Comprehensive Scan (All Templates)" \
+      "dos,fuzz,intrusive"
+  elif [[ "$LIVE_COUNT" -gt 100 && "$LIVE_COUNT" -le 1000 ]]; then
+    progress "Medium target set (${CYAN}$LIVE_COUNT${RESET}) - running focused scan"
+    run_nuclei_scan \
+      "$BASE_DIR/http_discovery/live_urls.txt" \
+      "$NUCLEI_TEMPLATES/http/" \
+      "medium,high,critical" \
+      "$BASE_DIR/nuclei/focused_scan.txt" \
+      "Focused HTTP Scan" \
       "dos,fuzz,intrusive"
   else
-    log "Skipping comprehensive scan ($LIVE_COUNT targets)"
+    log "Large target set (${CYAN}$LIVE_COUNT${RESET}) - targeted scans only"
   fi
 
-  ########################################
-  # AGGREGATE HIGH & CRITICAL FINDINGS
-  ########################################
-  info "Aggregating critical findings"
+  # Aggregate critical findings
   {
-    grep -Ei 'critical|high' "$BASE_DIR/nuclei/"*.txt 2>/dev/null
-  } | sort -u > "$BASE_DIR/nuclei/CRITICAL_FINDINGS.txt" || true
+    grep -Ei '\[critical\]|\[high\]' "$BASE_DIR/nuclei/"*.txt 2>/dev/null || true
+  } | sort -u > "$BASE_DIR/nuclei/CRITICAL_FINDINGS.txt" || touch "$BASE_DIR/nuclei/CRITICAL_FINDINGS.txt"
 
-  info "Critical findings: $(wc -l < "$BASE_DIR/nuclei/CRITICAL_FINDINGS.txt" 2>/dev/null || echo 0)"
-
-  stage_end nuclei
+  CRIT_COUNT=$(wc -l < "$BASE_DIR/nuclei/CRITICAL_FINDINGS.txt" 2>/dev/null || echo 0)
+  if [[ $CRIT_COUNT -gt 0 ]]; then
+    warn "Critical/High findings: ${BOLD}${RED}$CRIT_COUNT${RESET}"
+  else
+    success "No critical vulnerabilities found"
+  fi
 fi
 
 ########################################
 # FFUF
 ########################################
 if should_run ffuf; then
-  stage_start ffuf
-
-  # Safeguard to check for the wordlist folder making sure it's not empty
-  if [[ -s "$WORDLIST" ]]; then
-    run_tool "Running ffuf fuzzing" \
-      ffuf -w "$WORDLIST" \
-           -u "https://FUZZ.$domain" \
-           -mc 200 \
-           -o "$BASE_DIR/ffuf/results.json" \
-      || warn "ffuf scan failed"
-  else
-    warn "WORDLIST missing — skipping ffuf"
-  fi
-  stage_end ffuf
+  stage_header "9/9" "FUZZING (FFUF)"
+  
+  progress "Running ffuf..."
+  ffuf -w "$WORDLIST" -u "https://FUZZ.$domain" -ac -mc 200 \
+    -o "$BASE_DIR/ffuf/results.json" 2>/dev/null || true
+  
+  success "Ffuf completed"
 fi
 
-
-
 ########################################
-# SUMMARY
+# FINAL SUMMARY
 ########################################
-log "================================================"
-log "Recon Summary for $domain"
-log "Live URLs: $(wc -l < "$BASE_DIR/http_discovery/live_urls.txt" || echo 0)"
-log "Critical findings: $(wc -l < "$BASE_DIR/nuclei/CRITICAL_FINDINGS.txt" || echo 0)"
-log "================================================"
+echo ""
+echo -e "${CYAN}╔════════════════════════════════════════════════════════════════╗${RESET}"
+echo -e "${CYAN}║${RESET}               ${BOLD}${GREEN}RECONNAISSANCE COMPLETE${RESET}                      ${CYAN}║${RESET}"
+echo -e "${CYAN}╠════════════════════════════════════════════════════════════════╣${RESET}"
+echo -e "${CYAN}║${RESET}  Target: ${YELLOW}${BOLD}$(printf '%-50s' "$domain")${RESET} ${CYAN}║${RESET}"
+echo -e "${CYAN}╠════════════════════════════════════════════════════════════════╣${RESET}"
+echo -e "${CYAN}║${RESET}  ${BOLD}Discovery Statistics${RESET}                                    ${CYAN}║${RESET}"
+echo -e "${CYAN}║${RESET}  ├─ Domains Found:      ${GREEN}$(printf '%6s' "$(wc -l < "$BASE_DIR/dns/resolved_domains.txt" 2>/dev/null || echo 0)")${RESET}                         ${CYAN}║${RESET}"
+echo -e "${CYAN}║${RESET}  ├─ Live HTTP:          ${GREEN}$(printf '%6s' "$(wc -l < "$BASE_DIR/http_discovery/live_urls.txt" 2>/dev/null || echo 0)")${RESET}                         ${CYAN}║${RESET}"
+echo -e "${CYAN}║${RESET}  ├─ Status 200:         ${GREEN}$(printf '%6s' "$(wc -l < "$BASE_DIR/http_discovery/status_200.txt" 2>/dev/null || echo 0)")${RESET}                         ${CYAN}║${RESET}"
+echo -e "${CYAN}║${RESET}  ├─ Status 403:         ${YELLOW}$(printf '%6s' "$(wc -l < "$BASE_DIR/http_discovery/status_403.txt" 2>/dev/null || echo 0)")${RESET}                         ${CYAN}║${RESET}"
+echo -e "${CYAN}║${RESET}  └─ High-Value Targets: ${YELLOW}$(printf '%6s' "$(wc -l < "$BASE_DIR/http_exploitation/high_value_urls.txt" 2>/dev/null || echo 0)")${RESET}                         ${CYAN}║${RESET}"
+echo -e "${CYAN}║${RESET}                                                                ${CYAN}║${RESET}"
+echo -e "${CYAN}║${RESET}  ${BOLD}Security Intelligence${RESET}                                   ${CYAN}║${RESET}"
+echo -e "${CYAN}║${RESET}  ├─ Cloud Assets:       ${CYAN}$(printf '%6s' "$(wc -l < "$BASE_DIR/recon_intel/cloud_assets.txt" 2>/dev/null || echo 0)")${RESET}                         ${CYAN}║${RESET}"
+echo -e "${CYAN}║${RESET}  ├─ Takeover Risks:     ${YELLOW}$(printf '%6s' "$(wc -l < "$BASE_DIR/recon_intel/takeover_candidates.txt" 2>/dev/null || echo 0)")${RESET}                         ${CYAN}║${RESET}"
+echo -e "${CYAN}║${RESET}  └─ Critical Findings:  ${RED}$(printf '%6s' "$(wc -l < "$BASE_DIR/nuclei/CRITICAL_FINDINGS.txt" 2>/dev/null || echo 0)")${RESET}                         ${CYAN}║${RESET}"
+echo -e "${CYAN}╠════════════════════════════════════════════════════════════════╣${RESET}"
+echo -e "${CYAN}║${RESET}  ${BOLD}Output Location${RESET}                                         ${CYAN}║${RESET}"
+echo -e "${CYAN}║${RESET}  ${DIM}$(printf '%-60s' "$BASE_DIR")${RESET}  ${CYAN}║${RESET}"
+echo -e "${CYAN}╚════════════════════════════════════════════════════════════════╝${RESET}"
 
-
-log "Recon completed for $domain"
-info "Output directory: $BASE_DIR"
-echo "$GREEN [✓] Recon completed for $NC $domain"
-
-########################################
-# FINAL REPORT
-########################################
-FINAL_REPORT="$BASE_DIR/FINAL_REPORT.txt"
-
-info "Generating final reconnaissance report"
-
+# Generate detailed report
 {
-  echo "================================================================="
-  echo "Reconnaissance Report"
-  echo "Target Domain : $domain"
-  echo "Date          : $(date '+%F %T')"
-  echo "================================================================="
+  echo "╔════════════════════════════════════════════════════════════════╗"
+  echo "║          RECONNAISSANCE REPORT - $domain"
+  echo "║          Generated: $(date '+%F %T')"
+  echo "╚════════════════════════════════════════════════════════════════╝"
   echo ""
-
-  echo "DISCOVERY STATISTICS"
-  echo "-------------------"
-  echo "Resolved Domains       : $(wc -l < "$BASE_DIR/final/final_dns.txt" 2>/dev/null || echo 0)"
-  echo "Live HTTP Services     : $(wc -l < "$BASE_DIR/http_discovery/live_urls.txt" 2>/dev/null || echo 0)"
-  echo "Technologies Detected  : $(wc -l < "$BASE_DIR/http_discovery/technologies.txt" 2>/dev/null || echo 0)"
+  echo "═══ DISCOVERY STATISTICS ═══"
   echo ""
-
-  echo "HIGH-VALUE TARGETS"
-  echo "------------------"
-  echo "Admin/API/Auth Endpoints: $(wc -l < "$BASE_DIR/http_exploitation/high_value_urls.txt" 2>/dev/null || echo 0)"
-  if [[ -s "$BASE_DIR/http_exploitation/high_value_urls.txt" ]]; then
-    echo ""
-    echo "Top Endpoints:"
-    head -20 "$BASE_DIR/http_exploitation/high_value_urls.txt"
+  echo "Enumeration Results:"
+  echo "  • Total Domains Discovered:    $(wc -l < "$BASE_DIR/dns/resolved_domains.txt" 2>/dev/null || echo 0)"
+  echo "  • Live HTTP Services:          $(wc -l < "$BASE_DIR/http_discovery/live_urls.txt" 2>/dev/null || echo 0)"
+  echo "  • Unique Technologies:         $(wc -l < "$BASE_DIR/http_discovery/technologies.txt" 2>/dev/null || echo 0)"
+  echo ""
+  echo "HTTP Status Breakdown:"
+  echo "  • 200 OK:                      $(wc -l < "$BASE_DIR/http_discovery/status_200.txt" 2>/dev/null || echo 0)"
+  echo "  • 401 Unauthorized:            $(wc -l < "$BASE_DIR/http_discovery/status_401.txt" 2>/dev/null || echo 0)"
+  echo "  • 403 Forbidden:               $(wc -l < "$BASE_DIR/http_discovery/status_403.txt" 2>/dev/null || echo 0)"
+  echo "  • 404 Not Found:               $(wc -l < "$BASE_DIR/http_discovery/status_404.txt" 2>/dev/null || echo 0)"
+  echo "  • 5xx Server Errors:           $(wc -l < "$BASE_DIR/http_discovery/status_5xx.txt" 2>/dev/null || echo 0)"
+  echo ""
+  echo "═══ HIGH-VALUE TARGETS ═══"
+  echo ""
+  HV_COUNT=$(wc -l < "$BASE_DIR/http_exploitation/high_value_urls.txt" 2>/dev/null || echo 0)
+  if [[ $HV_COUNT -gt 0 ]]; then
+    echo "Admin/API/Auth Endpoints ($HV_COUNT total):"
+    head -15 "$BASE_DIR/http_exploitation/high_value_urls.txt" 2>/dev/null | sed 's/^/  • /' || echo "  None"
+    [[ $HV_COUNT -gt 15 ]] && echo "  ... and $((HV_COUNT - 15)) more"
   else
-    echo "None identified"
+    echo "No high-value targets identified"
   fi
   echo ""
-
-  echo "SECURITY FINDINGS"
-  echo "-----------------"
-  echo "Critical / High Severity Issues: $(wc -l < "$BASE_DIR/nuclei/CRITICAL_FINDINGS.txt" 2>/dev/null || echo 0)"
-  if [[ -s "$BASE_DIR/nuclei/CRITICAL_FINDINGS.txt" ]]; then
-    echo ""
+  echo "═══ SECURITY FINDINGS ═══"
+  echo ""
+  CRIT_COUNT=$(wc -l < "$BASE_DIR/nuclei/CRITICAL_FINDINGS.txt" 2>/dev/null || echo 0)
+  echo "Critical/High Severity Issues: $CRIT_COUNT"
+  echo ""
+  if [[ $CRIT_COUNT -gt 0 ]]; then
     echo "Top Findings:"
-    head -20 "$BASE_DIR/nuclei/CRITICAL_FINDINGS.txt"
-  else
-    echo "No critical findings detected"
+    head -25 "$BASE_DIR/nuclei/CRITICAL_FINDINGS.txt" 2>/dev/null | sed 's/^/  • /' || echo "  None"
+    [[ $CRIT_COUNT -gt 25 ]] && echo "  ... and $((CRIT_COUNT - 25)) more (see nuclei/CRITICAL_FINDINGS.txt)"
   fi
   echo ""
-
-  echo "CLOUD & INFRASTRUCTURE"
-  echo "---------------------"
-  echo "Cloud-hosted Assets      : $(wc -l < "$BASE_DIR/recon_intel/cloud_assets.txt" 2>/dev/null || echo 0)"
-  echo "Potential Takeovers      : $(wc -l < "$BASE_DIR/recon_intel/takeover_candidates.txt" 2>/dev/null || echo 0)"
+  echo "═══ CLOUD INFRASTRUCTURE ═══"
   echo ""
-
-  echo "OUTPUT"
-  echo "------"
-  echo "Results Directory : $BASE_DIR"
-  echo "Log File          : $LOG_FILE"
+  CLOUD_COUNT=$(wc -l < "$BASE_DIR/recon_intel/cloud_assets.txt" 2>/dev/null || echo 0)
+  echo "Cloud-Hosted Assets: $CLOUD_COUNT"
+  if [[ $CLOUD_COUNT -gt 0 ]]; then
+    echo ""
+    head -10 "$BASE_DIR/recon_intel/cloud_assets.txt" 2>/dev/null | sed 's/^/  • /' || echo "  None"
+    [[ $CLOUD_COUNT -gt 10 ]] && echo "  ... and $((CLOUD_COUNT - 10)) more"
+  fi
   echo ""
+  TAKEOVER_COUNT=$(wc -l < "$BASE_DIR/recon_intel/takeover_candidates.txt" 2>/dev/null || echo 0)
+  echo "Potential Subdomain Takeover Candidates: $TAKEOVER_COUNT"
+  if [[ $TAKEOVER_COUNT -gt 0 ]]; then
+    echo ""
+    echo "⚠️  PRIORITY: Review these for subdomain takeover vulnerabilities"
+    head -15 "$BASE_DIR/recon_intel/takeover_candidates.txt" 2>/dev/null | sed 's/^/  • /' || echo "  None"
+    [[ $TAKEOVER_COUNT -gt 15 ]] && echo "  ... and $((TAKEOVER_COUNT - 15)) more"
+  fi
+  echo ""
+  echo "═══ DETECTED TECHNOLOGIES ═══"
+  echo ""
+  TECH_COUNT=$(wc -l < "$BASE_DIR/http_discovery/technologies.txt" 2>/dev/null || echo 0)
+  if [[ $TECH_COUNT -gt 0 ]]; then
+    head -25 "$BASE_DIR/http_discovery/technologies.txt" 2>/dev/null | sed 's/^/  • /' || echo "  None"
+    [[ $TECH_COUNT -gt 25 ]] && echo "  ... and $((TECH_COUNT - 25)) more"
+  else
+    echo "No technologies detected"
+  fi
+  echo ""
+  echo "═══ FILE LOCATIONS ═══"
+  echo ""
+  echo "Results Directory:     $BASE_DIR"
+  echo "Logs:                  $BASE_DIR/logs/recon.log"
+  echo "Live URLs:             $BASE_DIR/http_discovery/live_urls.txt"
+  echo "Critical Findings:     $BASE_DIR/nuclei/CRITICAL_FINDINGS.txt"
+  echo "Takeover Candidates:   $BASE_DIR/recon_intel/takeover_candidates.txt"
+  echo ""
+  echo "╔════════════════════════════════════════════════════════════════╗"
+  echo "║  End of Report - $(date '+%F %T')"
+  echo "╚════════════════════════════════════════════════════════════════╝"
+} > "$BASE_DIR/FINAL_REPORT.txt"
 
-  echo "================================================================="
-  echo "End of Report"
-  echo "================================================================="
-} > "$FINAL_REPORT"
+echo ""
+success "Final report saved: ${CYAN}$BASE_DIR/FINAL_REPORT.txt${RESET}"
+echo ""
 
-info "Final report written to: $FINAL_REPORT"
+if [[ "$VERBOSE" == true ]]; then
+  cat "$BASE_DIR/FINAL_REPORT.txt"
+fi
