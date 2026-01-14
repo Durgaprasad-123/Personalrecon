@@ -133,7 +133,7 @@ done
 ########################################
 # STAGES
 ########################################
-STAGES=(passive bruteforce permutations dns recon_intel http_discovery http_exploitation nuclei ffuf)
+STAGES=(passive bruteforce permutations dns recon_intel http_discovery http_exploitation nuclei)
 
 stage_exists() {
   for s in "${STAGES[@]}"; do [[ "$s" == "$1" ]] && return 0; done
@@ -174,7 +174,7 @@ AMASS_CONFIG="$HOME/.config/amass/config.yaml"
 OUTPUT_ROOT="${OUTPUT_ROOT:-$PROJECT_ROOT/output}"
 BASE_DIR="$OUTPUT_ROOT/$domain"
 
-mkdir -p "$BASE_DIR"/{passive,bruteforce,permutations,dns,final,tmp,logs,recon_intel,http_discovery,http_exploitation,nuclei,ffuf}
+mkdir -p "$BASE_DIR"/{passive,bruteforce,permutations,dns,final,tmp,logs,recon_intel,http_discovery,http_exploitation,nuclei}
 
 LOG_FILE="$BASE_DIR/logs/recon.log"
 if [[ "$VERBOSE" == true ]]; then
@@ -603,18 +603,7 @@ if should_run nuclei; then
   fi
 fi
 
-########################################
-# FFUF
-########################################
-if should_run ffuf; then
-  stage_header "9/9" "FUZZING (FFUF)"
-  
-  progress "Running ffuf..."
-  ffuf -w "$WORDLIST" -u "https://FUZZ.$domain" -ac -mc 200 \
-    -o "$BASE_DIR/ffuf/results.json" 2>/dev/null || true
-  
-  success "Ffuf completed"
-fi
+
 
 ########################################
 # FINAL SUMMARY
