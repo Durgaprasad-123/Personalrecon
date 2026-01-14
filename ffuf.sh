@@ -211,7 +211,7 @@ for WL in "${WORDLISTS[@]}"; do
     error "Wordlist not found: $WL"
     exit 1
   fi
-  WL_SIZE=$(wc -l < "$WL")
+  WL_SIZE=$(wc -l < "$WL" 2>/dev/null || echo 0)
   log "  - $(basename "$WL"): $WL_SIZE words"
 done
 
@@ -295,6 +295,13 @@ awk '{print $1}' "$TARGETS_FILE" | grep -E '^https?://' | sort -u | head -n "$MA
   else
     echo "    → No findings"
   fi
+
+  # If the domain directory contains no non-empty files, remove it to avoid clutter
+  # (this helps when a target produced no findings or only zero-byte files)
+  if ! find "$DOMAIN_DIR" -type f -not -size 0 -print -quit >/dev/null 2>&1; then
+    warn "No non-empty result files for $URL — removing $DOMAIN_DIR"
+    rm -rf "$DOMAIN_DIR" 2>/dev/null || true
+  fi
   
   echo ""
 done
@@ -331,12 +338,12 @@ echo ""
 if [ "$TOTAL_FINDINGS" -gt 0 ]; then
   log "Creating aggregated results..."
   
-  # All findings sorted by status
+  # All findings sorted by URL (primary) then by status (numeric)
   find "$OUTPUT_DIR" -name "all_findings.txt" -exec cat {} \; 2>/dev/null \
-    | sort -t' ' -k1,1n | uniq > "$OUTPUT_DIR/ALL_FINDINGS.txt" || true
+    | sort -t' ' -k2,2 -k1,1n | uniq > "$OUTPUT_DIR/ALL_FINDINGS.txt" || true
   
-  # Extract high-value findings
-  grep -E ' (200|500|403|401) ' "$OUTPUT_DIR/ALL_FINDINGS.txt" 2>/dev/null \
+  # Extract high-value findings (status at start of line)
+  grep -E '^(200|500|403|401) ' "$OUTPUT_DIR/ALL_FINDINGS.txt" 2>/dev/null \
     | sort -u > "$OUTPUT_DIR/HIGH_VALUE_FINDINGS.txt" || true
   
   log "Key files:"
