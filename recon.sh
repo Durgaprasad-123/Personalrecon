@@ -497,27 +497,26 @@ if should_run nuclei; then
 
   # Phase 2: Technology Detection
   progress "Phase 2: Technology Fingerprinting"
-  nuclei -l "$BASE_DIR/nuclei/optimized_targets.txt" \
-    -t "$NUCLEI_TEMPLATES/http/technologies/" \
-    -o "$BASE_DIR/nuclei/raw/tech_detection.txt" \
-    -json-export "$BASE_DIR/nuclei/json/tech_detection.json" \
-    -silent -rate-limit 200 2>/dev/null || true
+  run_nuclei_scan "$BASE_DIR/nuclei/optimized_targets.txt" \
+    "$NUCLEI_TEMPLATES/http/technologies/" \
+    "info" "$BASE_DIR/nuclei/raw/tech_detection.txt" \
+    "Technology Detection" "dos,fuzz,intrusive"
 
   # Tech-specific scans
-  if [[ -f "$BASE_DIR/nuclei/json/tech_detection.json" ]]; then
-    if grep -qi "wordpress" "$BASE_DIR/nuclei/json/tech_detection.json" 2>/dev/null; then
+  if [[ -f "$BASE_DIR/nuclei/raw/tech_detection.txt" ]] && [[ -s "$BASE_DIR/nuclei/raw/tech_detection.txt" ]]; then
+    if grep -qi "wordpress" "$BASE_DIR/nuclei/raw/tech_detection.txt" 2>/dev/null; then
       run_nuclei_scan "$BASE_DIR/nuclei/optimized_targets.txt" \
         "$NUCLEI_TEMPLATES/http/misconfiguration/wordpress/,$NUCLEI_TEMPLATES/http/vulnerabilities/wordpress/" \
         "medium,high,critical" "$BASE_DIR/nuclei/raw/wordpress.txt" "WordPress"
     fi
 
-    if grep -qi "jenkins" "$BASE_DIR/nuclei/json/tech_detection.json" 2>/dev/null; then
+    if grep -qi "jenkins" "$BASE_DIR/nuclei/raw/tech_detection.txt" 2>/dev/null; then
       run_nuclei_scan "$BASE_DIR/nuclei/optimized_targets.txt" \
         "$NUCLEI_TEMPLATES/http/misconfiguration/jenkins/,$NUCLEI_TEMPLATES/http/vulnerabilities/jenkins/" \
         "medium,high,critical" "$BASE_DIR/nuclei/raw/jenkins.txt" "Jenkins"
     fi
 
-    if grep -qi "jira" "$BASE_DIR/nuclei/json/tech_detection.json" 2>/dev/null; then
+    if grep -qi "jira" "$BASE_DIR/nuclei/raw/tech_detection.txt" 2>/dev/null; then
       run_nuclei_scan "$BASE_DIR/nuclei/optimized_targets.txt" \
         "$NUCLEI_TEMPLATES/http/vulnerabilities/atlassian/" \
         "medium,high,critical" "$BASE_DIR/nuclei/raw/jira.txt" "Jira/Atlassian"
@@ -556,17 +555,25 @@ if should_run nuclei; then
   fi
 
   # Phase 6: Conditional comprehensive scan
+  progress "Phase 6: Adaptive Scanning Strategy"
   TARGET_COUNT=$(wc -l < "$BASE_DIR/nuclei/optimized_targets.txt" 2>/dev/null || echo 0)
+  echo -e "    ${DIM}Target count: ${YELLOW}$TARGET_COUNT${RESET}"
+  
   if [[ $TARGET_COUNT -le 50 ]]; then
-    progress "Small target set ($TARGET_COUNT) - deep scan"
+    progress "Small target set ($TARGET_COUNT) - launching deep comprehensive scan"
     run_nuclei_scan "$BASE_DIR/nuclei/optimized_targets.txt" "$NUCLEI_TEMPLATES/" \
       "info,low,medium,high,critical" "$BASE_DIR/nuclei/raw/comprehensive.txt" \
-      "Comprehensive Scan" "dos,fuzz,intrusive,headless"
+      "Comprehensive Deep Scan" "dos,fuzz,intrusive,headless"
   elif [[ $TARGET_COUNT -le 200 ]]; then
-    progress "Medium target set ($TARGET_COUNT) - focused scan"
+    progress "Medium target set ($TARGET_COUNT) - launching focused scan"
     run_nuclei_scan "$BASE_DIR/nuclei/optimized_targets.txt" "$NUCLEI_TEMPLATES/http/" \
       "low,medium,high,critical" "$BASE_DIR/nuclei/raw/focused.txt" \
       "Focused HTTP Scan" "dos,fuzz,intrusive"
+  else
+    progress "Large target set ($TARGET_COUNT) - quick critical-only scan"
+    run_nuclei_scan "$BASE_DIR/nuclei/optimized_targets.txt" "$NUCLEI_TEMPLATES/http/" \
+      "high,critical" "$BASE_DIR/nuclei/raw/quick_critical.txt" \
+      "Quick Critical Scan" "dos,fuzz,intrusive,headless"
   fi
 
   # Aggregate results
