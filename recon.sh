@@ -336,14 +336,17 @@ if should_run recon_intel; then
 
   progress "Detecting potential subdomain takeover candidates..."
 
+  # Initialize the file first
+  touch "$BASE_DIR/recon_intel/takeover_dns_candidates.txt"
+  
   if [[ -s "$BASE_DIR/tmp/puredns.snl" ]]; then
-    grep -Eai 'CNAME.*(azurewebsites|cloudapp|azure-api|trafficmanager|blob\.core\.windows)' \
+    # Fixed regex pattern with proper closing and added more providers
+    grep -Eai 'CNAME.*(azurewebsites|cloudapp|azure-api|trafficmanager|blob\.core\.windows\.net|herokuapp|pantheonsite|ghost\.io|zendesk|github\.io|s3\.amazonaws)' \
       "$BASE_DIR/tmp/puredns.snl" 2>/dev/null | awk '{print $1}' | sed 's/\.$//' | sort -u \
-      > "$BASE_DIR/recon_intel/takeover_dns_candidates.txt" || touch "$BASE_DIR/recon_intel/takeover_dns_candidates.txt"
-  else
-    touch "$BASE_DIR/recon_intel/takeover_dns_candidates.txt"
+      >> "$BASE_DIR/recon_intel/takeover_dns_candidates.txt" || true
   fi
 
+  # Combine and deduplicate all takeover candidates
   safe_cat "$BASE_DIR/recon_intel/cloud_assets.txt" "$BASE_DIR/recon_intel/takeover_dns_candidates.txt" \
     | sort -u > "$BASE_DIR/recon_intel/takeover_candidates.txt"
 
