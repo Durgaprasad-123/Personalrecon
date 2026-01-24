@@ -442,10 +442,10 @@ if should_run nuclei; then
     progress "${CYAN}${description}${RESET} (${count} targets)"
 
     nuclei -l "$target_file" -t "$templates" -severity "$severity" -et "$exclude_tags" \
-      -o "$output_file" -json-export "${output_file}.json" -silent -stats \
-      -timeout 15 -retries 2 -rate-limit 150 -bulk-size 50 -concurrency 25 \
-      -max-host-error 30 -stream -follow-host-redirects \
-      -disable-update-check -vv 2>"${output_file}_error.log" || true
+      -o "$output_file" -json-export "${output_file}.json" -silent \
+      -timeout 10 -retries 1 -rate-limit 100 -bulk-size 25 -concurrency 15 \
+      -max-host-error 10 -follow-host-redirects \
+      -disable-update-check 2>"${output_file}_error.log" || true
 
     local results
     results=$(wc -l < "$output_file" 2>/dev/null || echo 0)
