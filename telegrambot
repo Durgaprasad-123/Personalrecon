@@ -204,15 +204,16 @@ async def ffuf(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     raw_domain = context.args[0]
     domain = normalize_domain(raw_domain)
-    extra_args = context.args[1:]
+    extra_args = context.args[1:]  # Everything after domain name
 
     domain_dir = OUTPUT_DIR / domain
-    httpx_file = domain_dir / "http_discovery" / "httpx_full.txt"
+    httpx_json = domain_dir / "http_discovery" / "httpx_full.json"
 
-    if not httpx_file.exists():
+    # Check if JSON exists
+    if not httpx_json.exists():
         return await update.message.reply_text(
-            f"httpx_full.txt not found for `{domain}`\n\n"
-            f"Expected:\n{httpx_file}\n\n"
+            f"❌ httpx_full.json not found for `{domain}`\n\n"
+            f"Expected:\n{httpx_json}\n\n"
             "Run /recon first.",
             parse_mode="Markdown"
         )
@@ -228,22 +229,39 @@ async def ffuf(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "type": "ffuf",
     }
 
+    # Build arguments info for user
+    args_info = ""
+    if extra_args:
+        args_info = f"\nArguments: {' '.join(extra_args)}"
+
     await update.message.reply_text(
-        f"FFUF started\n\nDomain: {domain}\nJob ID: {job_id}"
+        f"🚀 FFUF started\n\n"
+        f"Domain: {domain}\n"
+        f"Job ID: {job_id}{args_info}"
     )
 
     async def run_ffuf():
         ffuf_output_dir = domain_dir / "ffuf-results"
         ffuf_output_dir.mkdir(parents=True, exist_ok=True)
 
+        # Build command - pass JSON file and ALL user arguments
+        # IMPORTANT: Force output directory to ensure we know where results are
         cmd = [
             "/usr/bin/env",
             "bash",
             str(FFUF_SCRIPT),
-            str(httpx_file),
-            *extra_args,
-            "-o", str(ffuf_output_dir),
+            str(httpx_json),  # Pass JSON file path as first argument
+            *extra_args,      # Pass ALL user arguments (wordlist, threads, etc)
+            "-o", str(ffuf_output_dir),  # Force output to known location
         ]
+
+        logger.info(f"FFUF command: {' '.join(cmd)}")
+
+        # Send progress update
+        await update.message.reply_text(
+            f"⚙️ Running ffuf.sh...\n\n"
+            f"Command: {' '.join(cmd[-3:])}"  # Show last 3 args
+        )
 
         proc = await asyncio.create_subprocess_exec(
             *cmd,
@@ -254,11 +272,63 @@ async def ffuf(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
         RUNNING_JOBS[job_id]["proc"] = proc
+        
+        # Stream output in real-time
+        stdout_lines = []
+        stderr_lines = []
+        
+        async def read_stdout():
+            async for line in proc.stdout:
+                decoded = line.decode().strip()
+                stdout_lines.append(decoded)
+                logger.info(f"FFUF: {decoded}")
+        
+        async def read_stderr():
+            async for line in proc.stderr:
+                decoded = line.decode().strip()
+                stderr_lines.append(decoded)
+                logger.error(f"FFUF ERROR: {decoded}")
+        
+        await asyncio.gather(read_stdout(), read_stderr())
         await proc.wait()
+        
+        RUNNING_JOBS[job_id]["status"] = "finished"
 
+        # Log full output
+        logger.info(f"FFUF completed with return code: {proc.returncode}")
+        if stdout_lines:
+            logger.info(f"FFUF stdout ({len(stdout_lines)} lines):\n" + "\n".join(stdout_lines[-20:]))
+        if stderr_lines:
+            logger.warning(f"FFUF stderr ({len(stderr_lines)} lines):\n" + "\n".join(stderr_lines[-20:]))
+
+        # Look for results - check recursively for any files
         zip_path = OUTPUT_DIR / f"{domain}_ffuf_{job_id}.zip"
-
-        if any(ffuf_output_dir.iterdir()):
+        
+        # Debug: List what was created
+        logger.info(f"Checking for results in: {ffuf_output_dir}")
+        if ffuf_output_dir.exists():
+            for root, dirs, files in os.walk(ffuf_output_dir):
+                logger.info(f"  Dir: {root}")
+                for f in files:
+                    file_path = os.path.join(root, f)
+                    file_size = os.path.getsize(file_path)
+                    logger.info(f"    File: {f} ({file_size} bytes)")
+        else:
+            logger.warning(f"Output directory does not exist: {ffuf_output_dir}")
+        
+        # Check if ffuf created any results (check recursively)
+        has_results = False
+        result_count = 0
+        if ffuf_output_dir.exists():
+            for root, dirs, files in os.walk(ffuf_output_dir):
+                for f in files:
+                    if f.endswith('.json') or f.endswith('.txt'):
+                        has_results = True
+                        result_count += 1
+        
+        logger.info(f"Found {result_count} result files, has_results={has_results}")
+        
+        if has_results:
             shutil.make_archive(
                 str(zip_path).replace(".zip", ""),
                 "zip",
@@ -270,18 +340,23 @@ async def ffuf(update: Update, context: ContextTypes.DEFAULT_TYPE):
             link = await upload_large_file(zip_path)
 
             await update.message.reply_text(
-                f"FFUF completed\n\n"
+                f"✅ FFUF completed\n\n"
                 f"Job: {job_id}\n"
                 f"Time: {format_time(elapsed)}\n"
                 f"Size: {size_mb:.2f} MB\n\n"
-                f"Download:\n{link}"
+                f"📥 Download:\n{link}"
             )
         else:
-            await update.message.reply_text("FFUF completed — no findings.")
+            await update.message.reply_text(
+                f"ℹ️ FFUF completed — no findings.\n\n"
+                f"Job: {job_id}\n"
+                f"Time: {format_time(int(time.time() - start_time))}"
+            )
 
         RUNNING_JOBS.pop(job_id, None)
 
     asyncio.create_task(run_ffuf())
+
 
 # =====================================================
 # STATUS / CANCEL
