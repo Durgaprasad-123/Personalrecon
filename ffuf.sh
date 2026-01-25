@@ -23,6 +23,10 @@ cat <<EOF
 Usage:
   $(basename "$0") <targets_file> [options]
 
+Targets file can be:
+  - Plain text file with one URL per line
+  - JSON file (httpx format) - URLs will be extracted automatically
+
 Options:
   -w, --wordlist <path>    Custom wordlist (can specify multiple times)
   -t, --threads <num>      Number of threads (default: 30)
@@ -32,14 +36,16 @@ Options:
   -h, --help               Show this help
 
 Examples:
-  $(basename "$0") httpx_full.txt
-  $(basename "$0") httpx_full.txt -w /path/to/custom.txt
-  $(basename "$0") httpx_full.txt --threads 50 --max-targets 50
+  $(basename "$0") httpx_full.json
+  $(basename "$0") httpx_full.json -w /path/to/custom.txt
+  $(basename "$0") httpx_full.json -w /path/to/wordlist.txt -t 50 -o /custom/output
+  $(basename "$0") live_urls.txt --threads 50 --max-targets 50
 
 Default wordlists used if none specified:
   - raft-small-directories.txt
   - raft-medium-directories.txt
   - api-endpoints.txt
+  - common.txt
 EOF
 }
 
@@ -116,7 +122,7 @@ ALTERNATIVE_LOCATIONS=(
 )
 
 ########################################
-# CHECK FFUF
+# CHECK DEPENDENCIES
 ########################################
 if ! command -v ffuf &>/dev/null; then
   error "ffuf is not installed"
@@ -127,6 +133,13 @@ if ! command -v ffuf &>/dev/null; then
   exit 1
 fi
 
+if ! command -v jq &>/dev/null; then
+  warn "jq is not installed - JSON parsing will use grep fallback"
+  echo "Install jq for better performance:"
+  echo "  sudo apt install jq"
+  echo ""
+fi
+
 ########################################
 # CHECK TARGET FILE
 ########################################
@@ -135,16 +148,55 @@ if [ ! -f "$TARGETS_FILE" ]; then
   exit 1
 fi
 
-# Count targets
-TARGET_COUNT=$(awk '{print $1}' "$TARGETS_FILE" 2>/dev/null | grep -E '^https?://' | wc -l || echo 0)
+########################################
+# EXTRACT URLs from JSON or TXT
+########################################
+TEMP_URLS_FILE=$(mktemp)
+trap "rm -f $TEMP_URLS_FILE" EXIT
+
+log "Processing input file: $TARGETS_FILE"
+
+# Check if file is JSON (by extension or content)
+if [[ "$TARGETS_FILE" == *.json ]] || file "$TARGETS_FILE" 2>/dev/null | grep -qi "JSON"; then
+  log "Detected JSON file - extracting URLs..."
+  
+  if command -v jq &>/dev/null; then
+    # Use jq if available (better and faster)
+    log "Using jq for JSON parsing..."
+    jq -r 'select(.url != null) | .url' "$TARGETS_FILE" 2>/dev/null | grep -E '^https?://' > "$TEMP_URLS_FILE" || true
+  else
+    # Fallback to grep/sed
+    log "Using grep/sed for JSON parsing (install jq for better performance)..."
+    grep -o '"url":"[^"]*"' "$TARGETS_FILE" | sed 's/"url":"//g' | sed 's/"//g' | grep -E '^https?://' > "$TEMP_URLS_FILE" || true
+  fi
+  
+  EXTRACTED_COUNT=$(wc -l < "$TEMP_URLS_FILE" 2>/dev/null || echo 0)
+  if [ "$EXTRACTED_COUNT" -eq 0 ]; then
+    error "No URLs extracted from JSON file"
+    echo "Please check the JSON format. Expected format:"
+    echo '{"url": "https://example.com", ...}'
+    exit 1
+  fi
+  success "Extracted $EXTRACTED_COUNT URLs from JSON"
+else
+  # Plain text file - extract URLs
+  log "Processing plain text file..."
+  awk '{print $1}' "$TARGETS_FILE" 2>/dev/null | grep -E '^https?://' > "$TEMP_URLS_FILE" || true
+fi
+
+# Count valid targets
+TARGET_COUNT=$(wc -l < "$TEMP_URLS_FILE" 2>/dev/null || echo 0)
 
 if [ "$TARGET_COUNT" -eq 0 ]; then
   error "No valid URLs found in $TARGETS_FILE"
-  echo "Expected format: URL [status] [title] [tech]"
+  echo ""
+  echo "Expected formats:"
+  echo "  - Plain text: One URL per line (http://example.com or https://example.com)"
+  echo "  - JSON: httpx output format with 'url' field"
   exit 1
 fi
 
-log "Found $TARGET_COUNT targets in $TARGETS_FILE"
+log "Found $TARGET_COUNT valid target URLs"
 
 # Limit targets if too many
 if [ "$TARGET_COUNT" -gt "$MAX_TARGETS" ]; then
@@ -161,7 +213,7 @@ if [ ${#USER_WORDLISTS[@]} -gt 0 ]; then
 else
   # Try to find default wordlists
   FOUND_WORDLISTS=()
-  
+
   for WL in "${DEFAULT_WORDLISTS[@]}"; do
     if [ -f "$WL" ]; then
       FOUND_WORDLISTS+=("$WL")
@@ -169,7 +221,7 @@ else
       # Try alternative locations
       WL_BASENAME=$(basename "$WL")
       FOUND_ALT=false
-      
+
       for ALT_DIR in "${ALTERNATIVE_LOCATIONS[@]}"; do
         if [ -f "$ALT_DIR/$WL_BASENAME" ]; then
           FOUND_WORDLISTS+=("$ALT_DIR/$WL_BASENAME")
@@ -177,13 +229,13 @@ else
           break
         fi
       done
-      
+
       if [ "$FOUND_ALT" = false ]; then
         warn "Wordlist not found: $WL_BASENAME"
       fi
     fi
   done
-  
+
   if [ ${#FOUND_WORDLISTS[@]} -eq 0 ]; then
     error "No wordlists found"
     echo ""
@@ -198,7 +250,7 @@ else
     echo ""
     exit 1
   fi
-  
+
   WORDLISTS=("${FOUND_WORDLISTS[@]}")
   log "Using ${#WORDLISTS[@]} default wordlist(s)"
 fi
@@ -238,25 +290,25 @@ echo ""
 SCANNED_COUNT=0
 TOTAL_FINDINGS=0
 
-# Extract and scan URLs
-awk '{print $1}' "$TARGETS_FILE" | grep -E '^https?://' | sort -u | head -n "$MAX_TARGETS" | while read -r URL; do
+# Scan URLs (sorted and unique)
+sort -u "$TEMP_URLS_FILE" | head -n "$MAX_TARGETS" | while read -r URL; do
   ((SCANNED_COUNT++)) || true
-  
+
   # Create safe directory name
   DOMAIN=$(echo "$URL" | sed -e 's|https\?://||g' -e 's|[/:]|_|g' -e 's|_$||')
   DOMAIN_DIR="$OUTPUT_DIR/$DOMAIN"
   mkdir -p "$DOMAIN_DIR"
-  
+
   log "[$SCANNED_COUNT/$MAX_TARGETS] Scanning: $URL"
-  
+
   DOMAIN_FINDINGS=0
-  
+
   for WORDLIST in "${WORDLISTS[@]}"; do
     WL_NAME=$(basename "$WORDLIST" .txt)
     OUTPUT_FILE="$DOMAIN_DIR/${WL_NAME}.json"
-    
+
     echo "    [+] Wordlist: $WL_NAME"
-    
+
     # Run ffuf with progress
     ffuf -u "$URL/FUZZ" \
       -w "$WORDLIST" \
@@ -269,25 +321,32 @@ awk '{print $1}' "$TARGETS_FILE" | grep -E '^https?://' | sort -u | head -n "$MA
       -o "$OUTPUT_FILE" \
       -of json \
       -s 2>/dev/null || true
-    
+
     # Count findings
     if [ -f "$OUTPUT_FILE" ]; then
-      FINDINGS=$(jq -r '.results | length' "$OUTPUT_FILE" 2>/dev/null || echo 0)
+      if command -v jq &>/dev/null; then
+        FINDINGS=$(jq -r '.results | length' "$OUTPUT_FILE" 2>/dev/null || echo 0)
+      else
+        FINDINGS=$(grep -c '"url"' "$OUTPUT_FILE" 2>/dev/null || echo 0)
+      fi
+      
       if [ "$FINDINGS" -gt 0 ]; then
         echo "        → Found $FINDINGS paths"
         ((DOMAIN_FINDINGS+=FINDINGS)) || true
         ((TOTAL_FINDINGS+=FINDINGS)) || true
-        
+
         # Extract interesting findings
-        jq -r '.results[] | "\(.status) \(.url)"' "$OUTPUT_FILE" 2>/dev/null \
-          >> "$DOMAIN_DIR/all_findings.txt" || true
+        if command -v jq &>/dev/null; then
+          jq -r '.results[] | "\(.status) \(.url)"' "$OUTPUT_FILE" 2>/dev/null \
+            >> "$DOMAIN_DIR/all_findings.txt" || true
+        fi
       else
         # Remove empty JSON files
         rm -f "$OUTPUT_FILE"
       fi
     fi
   done
-  
+
   # Summary for this domain
   if [ "$DOMAIN_FINDINGS" -gt 0 ]; then
     echo "$URL: $DOMAIN_FINDINGS findings" >> "$SUMMARY_FILE"
@@ -296,13 +355,12 @@ awk '{print $1}' "$TARGETS_FILE" | grep -E '^https?://' | sort -u | head -n "$MA
     echo "    → No findings"
   fi
 
-  # If the domain directory contains no non-empty files, remove it to avoid clutter
-  # (this helps when a target produced no findings or only zero-byte files)
+  # Remove empty directories
   if ! find "$DOMAIN_DIR" -type f -not -size 0 -print -quit >/dev/null 2>&1; then
     warn "No non-empty result files for $URL — removing $DOMAIN_DIR"
     rm -rf "$DOMAIN_DIR" 2>/dev/null || true
   fi
-  
+
   echo ""
 done
 
@@ -324,7 +382,7 @@ if [ -s "$SUMMARY_FILE" ]; then
   echo ""
   log "Findings by target:"
   cat "$SUMMARY_FILE" | head -20
-  
+
   if [ $(wc -l < "$SUMMARY_FILE") -gt 20 ]; then
     echo "    ... (see $SUMMARY_FILE for full list)"
   fi
@@ -335,17 +393,17 @@ success "ffuf scanning completed"
 echo ""
 
 # Create aggregated results
-if [ "$TOTAL_FINDINGS" -gt 0 ]; then
+if [ "$TOTAL_FINDINGS" -gt 0 ] && command -v jq &>/dev/null; then
   log "Creating aggregated results..."
-  
+
   # All findings sorted by URL (primary) then by status (numeric)
   find "$OUTPUT_DIR" -name "all_findings.txt" -exec cat {} \; 2>/dev/null \
     | sort -t' ' -k2,2 -k1,1n | uniq > "$OUTPUT_DIR/ALL_FINDINGS.txt" || true
-  
+
   # Extract high-value findings (status at start of line)
   grep -E '^(200|500|403|401) ' "$OUTPUT_DIR/ALL_FINDINGS.txt" 2>/dev/null \
     | sort -u > "$OUTPUT_DIR/HIGH_VALUE_FINDINGS.txt" || true
-  
+
   log "Key files:"
   log "  - All findings: $OUTPUT_DIR/ALL_FINDINGS.txt"
   log "  - High-value: $OUTPUT_DIR/HIGH_VALUE_FINDINGS.txt"
