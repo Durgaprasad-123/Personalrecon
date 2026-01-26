@@ -335,24 +335,48 @@ if should_run recon_intel; then
   echo -e "    ${DIM}Cloud assets: ${CYAN}$(wc -l < "$BASE_DIR/recon_intel/cloud_assets.txt" 2>/dev/null || echo 0)${RESET}"
 
   progress "Detecting potential subdomain takeover candidates..."
-
-  # Initialize the file first
   touch "$BASE_DIR/recon_intel/takeover_dns_candidates.txt"
+  touch "$BASE_DIR/recon_intel/takeover_dns_full.txt"
   
   if [[ -s "$BASE_DIR/tmp/puredns.snl" ]]; then
-    # Fixed regex pattern with proper closing and added more providers
+    # Extract FULL records (subdomain + CNAME target)
     grep -Eai 'CNAME.*(azurewebsites|cloudapp|azure-api|trafficmanager|blob\.core\.windows\.net|herokuapp|pantheonsite|ghost\.io|zendesk|github\.io|s3\.amazonaws)' \
-      "$BASE_DIR/tmp/puredns.snl" 2>/dev/null | awk '{print $1}' | sed 's/\.$//' | sort -u \
-      >> "$BASE_DIR/recon_intel/takeover_dns_candidates.txt" || true
+      "$BASE_DIR/tmp/puredns.snl" 2>/dev/null \
+      > "$BASE_DIR/recon_intel/takeover_dns_full.txt" || true
+    
+    # Extract ONLY the source subdomains (column 1)
+    awk '{print $1}' "$BASE_DIR/recon_intel/takeover_dns_full.txt" 2>/dev/null \
+      | sed 's/\.$//' | sort -u \
+      > "$BASE_DIR/recon_intel/takeover_dns_candidates.txt" || true
   fi
 
-  # Combine and deduplicate all takeover candidates
+  # Combine YOUR subdomains (not CNAME targets)
   safe_cat "$BASE_DIR/recon_intel/cloud_assets.txt" "$BASE_DIR/recon_intel/takeover_dns_candidates.txt" \
     | sort -u > "$BASE_DIR/recon_intel/takeover_candidates.txt"
 
   TAKEOVER_COUNT=$(wc -l < "$BASE_DIR/recon_intel/takeover_candidates.txt" 2>/dev/null || echo 0)
   if [[ $TAKEOVER_COUNT -gt 0 ]]; then
     warn "Potential takeover candidates: ${BOLD}${YELLOW}$TAKEOVER_COUNT${RESET}"
+    
+    # Create human-readable mapping file
+    if [[ -s "$BASE_DIR/recon_intel/takeover_dns_full.txt" ]]; then
+      {
+        echo "# Subdomain Takeover Candidates"
+        echo "# Format: YOUR_SUBDOMAIN → CNAME_TARGET"
+        echo "#"
+        awk '{
+          sub(/\.$/, "", $1); 
+          for(i=2; i<=NF; i++) {
+            if($i ~ /CNAME/) {
+              target = $(i+1);
+              sub(/\.$/, "", target);
+              print $1 " → " target;
+              break;
+            }
+          }
+        }' "$BASE_DIR/recon_intel/takeover_dns_full.txt" | sort -u
+      } > "$BASE_DIR/recon_intel/takeover_mapping.txt"
+    fi
   else
     success "No obvious takeover candidates detected"
   fi
@@ -388,7 +412,8 @@ if should_run http_discovery; then
       > "$BASE_DIR/http_discovery/status_200.txt" || touch "$BASE_DIR/http_discovery/status_200.txt"
     jq -r 'select(.status_code == 403) | .url' "$HTTPX_JSON" 2>/dev/null \
       > "$BASE_DIR/http_discovery/status_403.txt" || touch "$BASE_DIR/http_discovery/status_403.txt"
-
+    jq -r 'select(.status_code == 404) | .url' "$HTTPX_JSON" 2>/dev/null \
+      > "$BASE_DIR/http_discovery/status_404.txt" || touch "$BASE_DIR/http_discovery/status_404.txt"
     jq -r '.tech[]?' "$HTTPX_JSON" 2>/dev/null | sort -u \
       > "$BASE_DIR/http_discovery/technologies.txt" || touch "$BASE_DIR/http_discovery/technologies.txt"
 
