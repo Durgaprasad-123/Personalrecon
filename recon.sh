@@ -336,47 +336,39 @@ if should_run recon_intel; then
 
   progress "Detecting potential subdomain takeover candidates..."
   touch "$BASE_DIR/recon_intel/takeover_dns_candidates.txt"
-  touch "$BASE_DIR/recon_intel/takeover_dns_full.txt"
+  touch "$BASE_DIR/recon_intel/takeover_mapping.txt"
   
   if [[ -s "$BASE_DIR/tmp/puredns.snl" ]]; then
-    # Extract FULL records (subdomain + CNAME target)
-    grep -Eai 'CNAME.*(azurewebsites|cloudapp|azure-api|trafficmanager|blob\.core\.windows\.net|herokuapp|pantheonsite|ghost\.io|zendesk|github\.io|s3\.amazonaws)' \
-      "$BASE_DIR/tmp/puredns.snl" 2>/dev/null \
-      > "$BASE_DIR/recon_intel/takeover_dns_full.txt" || true
-    
-    # Extract ONLY the source subdomains (column 1)
-    awk '{print $1}' "$BASE_DIR/recon_intel/takeover_dns_full.txt" 2>/dev/null \
-      | sed 's/\.$//' | sort -u \
-      > "$BASE_DIR/recon_intel/takeover_dns_candidates.txt" || true
-  fi
-
-  # Combine YOUR subdomains (not CNAME targets)
-  safe_cat "$BASE_DIR/recon_intel/cloud_assets.txt" "$BASE_DIR/recon_intel/takeover_dns_candidates.txt" \
-    | sort -u > "$BASE_DIR/recon_intel/takeover_candidates.txt"
-
-  TAKEOVER_COUNT=$(wc -l < "$BASE_DIR/recon_intel/takeover_candidates.txt" 2>/dev/null || echo 0)
-  if [[ $TAKEOVER_COUNT -gt 0 ]]; then
-    warn "Potential takeover candidates: ${BOLD}${YELLOW}$TAKEOVER_COUNT${RESET}"
-    
-    # Create human-readable mapping file
-    if [[ -s "$BASE_DIR/recon_intel/takeover_dns_full.txt" ]]; then
-      {
-        echo "# Subdomain Takeover Candidates"
-        echo "# Format: YOUR_SUBDOMAIN → CNAME_TARGET"
-        echo "#"
-        awk '{
-          sub(/\.$/, "", $1); 
+    # Filter for YOUR domain CNAMEs pointing to vulnerable services
+    grep -Eai "\.${domain}\. CNAME.*(azurewebsites|cloudapp|azure-api|trafficmanager|blob\.core\.windows\.net|herokuapp|pantheonsite|ghost\.io|zendesk|github\.io|s3\.amazonaws|getbynder|bitly)" \
+      "$BASE_DIR/tmp/puredns.snl" 2>/dev/null | \
+      awk -v domain="$domain" '{
+        # Only process if first column ends with our target domain
+        if ($1 ~ "\\." domain "\\.$") {
+          sub(/\.$/, "", $1);
           for(i=2; i<=NF; i++) {
             if($i ~ /CNAME/) {
               target = $(i+1);
               sub(/\.$/, "", target);
               print $1 " → " target;
+              print $1 > "'"$BASE_DIR/recon_intel/takeover_dns_candidates.txt"'"
               break;
             }
           }
-        }' "$BASE_DIR/recon_intel/takeover_dns_full.txt" | sort -u
-      } > "$BASE_DIR/recon_intel/takeover_mapping.txt"
-    fi
+        }
+      }' > "$BASE_DIR/recon_intel/takeover_mapping.txt" || true
+  fi
+
+  # Combine YOUR subdomains only
+  {
+    cat "$BASE_DIR/recon_intel/cloud_assets.txt" 2>/dev/null
+    cat "$BASE_DIR/recon_intel/takeover_dns_candidates.txt" 2>/dev/null
+  } | grep -E "\.${domain}$" | sort -u > "$BASE_DIR/recon_intel/takeover_candidates.txt"
+
+  TAKEOVER_COUNT=$(wc -l < "$BASE_DIR/recon_intel/takeover_candidates.txt" 2>/dev/null || echo 0)
+  if [[ $TAKEOVER_COUNT -gt 0 ]]; then
+    warn "Potential takeover candidates: ${BOLD}${YELLOW}$TAKEOVER_COUNT${RESET}"
+    [[ "$VERBOSE" == true ]] && cat "$BASE_DIR/recon_intel/takeover_mapping.txt" | head -10 | sed 's/^/    /'
   else
     success "No obvious takeover candidates detected"
   fi
