@@ -316,10 +316,33 @@ if should_run dns; then
     -r "$RESOLVERS" --wildcard-tests 5 \
     --write-massdns "$BASE_DIR/tmp/puredns.snl" || true
 
-  awk '{print $1}' "$BASE_DIR/tmp/puredns.snl" 2>/dev/null | sed 's/\.$//' \
-    | sort -u > "$BASE_DIR/dns/resolved_domains.txt" || touch "$BASE_DIR/dns/resolved_domains.txt"
+  # FIX: Extract domains from massdns output AND filter to only your target domain
+  awk '{print $1}' "$BASE_DIR/tmp/puredns.snl" 2>/dev/null | \
+    sed 's/\.$//' | \
+    grep -E "\.${domain}\$|^${domain}\$" | \
+    sort -u > "$BASE_DIR/dns/resolved_domains.txt" || touch "$BASE_DIR/dns/resolved_domains.txt"
 
   success "Final resolved domains: ${BOLD}${GREEN}$(wc -l < "$BASE_DIR/dns/resolved_domains.txt" || echo 0)${RESET}"
+  
+  # Optional: Save CNAME mappings for reference (without adding CNAMEs to resolved list)
+  progress "Extracting CNAME mappings for reference..."
+  grep "CNAME" "$BASE_DIR/tmp/puredns.snl" 2>/dev/null | \
+    awk -v domain="$domain" '{
+      if ($1 ~ "\\." domain "\\.$" || $1 ~ "^" domain "\\.$") {
+        sub(/\.$/, "", $1);
+        for(i=2; i<=NF; i++) {
+          if($i == "CNAME") {
+            target = $(i+1);
+            sub(/\.$/, "", target);
+            print $1 " → " target;
+            break;
+          }
+        }
+      }
+    }' > "$BASE_DIR/dns/cname_mappings.txt" || touch "$BASE_DIR/dns/cname_mappings.txt"
+  
+  CNAME_COUNT=$(wc -l < "$BASE_DIR/dns/cname_mappings.txt" 2>/dev/null || echo 0)
+  [[ $CNAME_COUNT -gt 0 ]] && log "Saved $CNAME_COUNT CNAME mappings to dns/cname_mappings.txt"
 fi
 
 ########################################
