@@ -218,7 +218,7 @@ echo -e "${CYAN}║${RESET}          ${BOLD}${GREEN}AUTOMATED RECONNAISSANCE FRA
 echo -e "${CYAN}╠════════════════════════════════════════════════════════════╣${RESET}"
 echo -e "${CYAN}║${RESET}  Target: ${YELLOW}${BOLD}$(printf '%-50s' "$domain")${RESET} ${CYAN}║${RESET}"
 echo -e "${CYAN}║${RESET}  Output: ${DIM}$(printf '%-50s' "$BASE_DIR")${RESET} ${CYAN}║${RESET}"
-echo -e "${CYAN}║${RESET}  BY: ${BOLD}${GREEN}Prasad${RESET} ${CYAN}║${RESET}"
+echo -e "${CYAN}║${RESET}  BY:     ${BOLD}${GREEN} PRASAD${RESET}"
 echo -e "${CYAN}║${RESET}  Start:  ${GREEN}$(printf '%-50s' "$START_STAGE")${RESET} ${CYAN}║${RESET}"
 echo -e "${CYAN}╚════════════════════════════════════════════════════════════╝${RESET}"
 echo ""
@@ -303,6 +303,9 @@ fi
 ########################################
 # DNS
 ########################################
+########################################
+# DNS RESOLUTION (FIXED)
+########################################
 if should_run dns; then
   stage_header "4/8" "DNS RESOLUTION"
 
@@ -324,7 +327,7 @@ if should_run dns; then
     sort -u > "$BASE_DIR/dns/resolved_domains.txt" || touch "$BASE_DIR/dns/resolved_domains.txt"
 
   success "Final resolved domains: ${BOLD}${GREEN}$(wc -l < "$BASE_DIR/dns/resolved_domains.txt" || echo 0)${RESET}"
-  
+
   # Optional: Save CNAME mappings for reference (without adding CNAMEs to resolved list)
   progress "Extracting CNAME mappings for reference..."
   grep "CNAME" "$BASE_DIR/tmp/puredns.snl" 2>/dev/null | \
@@ -341,7 +344,7 @@ if should_run dns; then
         }
       }
     }' > "$BASE_DIR/dns/cname_mappings.txt" || touch "$BASE_DIR/dns/cname_mappings.txt"
-  
+
   CNAME_COUNT=$(wc -l < "$BASE_DIR/dns/cname_mappings.txt" 2>/dev/null || echo 0)
   [[ $CNAME_COUNT -gt 0 ]] && log "Saved $CNAME_COUNT CNAME mappings to dns/cname_mappings.txt"
 fi
@@ -361,7 +364,7 @@ if should_run recon_intel; then
   progress "Detecting potential subdomain takeover candidates..."
   touch "$BASE_DIR/recon_intel/takeover_dns_candidates.txt"
   touch "$BASE_DIR/recon_intel/takeover_mapping.txt"
-  
+
   if [[ -s "$BASE_DIR/tmp/puredns.snl" ]]; then
     # Filter for YOUR domain CNAMEs pointing to vulnerable services
     grep -Eai "\.${domain}\. CNAME.*(azurewebsites|cloudapp|azure-api|trafficmanager|blob\.core\.windows\.net|herokuapp|pantheonsite|ghost\.io|zendesk|github\.io|s3\.amazonaws|getbynder|bitly)" \
@@ -602,7 +605,7 @@ if should_run nuclei; then
   progress "Phase 6: Adaptive Scanning Strategy"
   TARGET_COUNT=$(wc -l < "$BASE_DIR/nuclei/optimized_targets.txt" 2>/dev/null || echo 0)
   echo -e "    ${DIM}Target count: ${YELLOW}$TARGET_COUNT${RESET}"
-  
+
   if [[ $TARGET_COUNT -le 50 ]]; then
     progress "Small target set ($TARGET_COUNT) - launching deep comprehensive scan"
     run_nuclei_scan "$BASE_DIR/nuclei/optimized_targets.txt" "$NUCLEI_TEMPLATES/" \
