@@ -218,6 +218,7 @@ echo -e "${CYAN}║${RESET}          ${BOLD}${GREEN}AUTOMATED RECONNAISSANCE FRA
 echo -e "${CYAN}╠════════════════════════════════════════════════════════════╣${RESET}"
 echo -e "${CYAN}║${RESET}  Target: ${YELLOW}${BOLD}$(printf '%-50s' "$domain")${RESET} ${CYAN}║${RESET}"
 echo -e "${CYAN}║${RESET}  Output: ${DIM}$(printf '%-50s' "$BASE_DIR")${RESET} ${CYAN}║${RESET}"
+echo -e "${CYAN}║${RESET}  BY: ${BOLD}${GREEN}Prasad${RESET} ${CYAN}║${RESET}"
 echo -e "${CYAN}║${RESET}  Start:  ${GREEN}$(printf '%-50s' "$START_STAGE")${RESET} ${CYAN}║${RESET}"
 echo -e "${CYAN}╚════════════════════════════════════════════════════════════╝${RESET}"
 echo ""
