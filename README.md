@@ -292,7 +292,27 @@ HTTP_THREADS=20        # Reduce HTTP threads
 NUCLEI_CONCURRENCY=15  # Reduce nuclei parallel scans
 THREADS=20             # Reduce ffuf threads
 ```
+### Changes you should make in nuclei 
+# Small scans (<100 targets)
+-concurrency 15 -max-host-error 30
 
+# Medium scans (100-500 targets)
+-concurrency 20 -max-host-error 50
+
+# Large scans (>500 targets)
+-concurrency 25 -max-host-error 100
+########################################
+# CONFIG
+########################################
+HTTP_THREADS=50
+HTTP_RATE=120
+
+# Nuclei settings - optimized for stability
+NUCLEI_CONCURRENCY=20
+NUCLEI_RATE=150
+NUCLEI_TIMEOUT=15
+NUCLEI_MAX_HOST_ERROR=50  # ← Add this
+NUCLEI_RETRIES=2
 ## 🔐 Security Notes
 
 - Always get **written permission** before scanning targets
