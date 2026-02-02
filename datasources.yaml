@@ -1,0 +1,230 @@
+ IMPORTANT: Replace "YOUR_API_KEY_HERE" with actual API keys
+# Remove or comment out any data sources you don't have keys for
+
+# Free data sources (no API key needed)
+datasources:
+  - name: AlienVault
+    ttl: 4320  # 3 days
+
+  - name: Arquivo
+    ttl: 10080
+
+  - name: Ask
+    ttl: 4320
+
+  - name: Baidu
+    ttl: 4320
+
+  - name: Bing
+    ttl: 4320
+
+  - name: BufferOver
+    ttl: 10080
+
+  - name: CertSpotter
+    ttl: 4320
+
+  - name: CIRCL
+    ttl: 4320
+
+  - name: CommonCrawl
+    ttl: 10080
+
+  - name: Crtsh
+    ttl: 4320
+
+  - name: DNSDB
+    ttl: 4320
+
+  - name: DNSDumpster
+    ttl: 4320
+
+  - name: DNSRepo
+    ttl: 4320
+
+  - name: Dogpile
+    ttl: 4320
+
+  - name: Exalead
+    ttl: 4320
+
+  - name: Google
+    ttl: 4320
+
+  - name: HackerOne
+    ttl: 10080
+
+  - name: HackerTarget
+    ttl: 4320
+
+  - name: IPv4Info
+    ttl: 10080
+
+  - name: Maltiverse
+    ttl: 4320
+
+  - name: Netcraft
+    ttl: 10080
+
+  - name: ONYPHE
+    ttl: 4320
+
+  - name: OpenUKArchive
+    ttl: 10080
+
+  - name: PKey
+    ttl: 4320
+
+  - name: RapidDNS
+    ttl: 4320
+
+  - name: Riddler
+    ttl: 10080
+
+  - name: Robtex
+    ttl: 4320
+
+  - name: SiteDossier
+    ttl: 4320
+
+  - name: Sublist3rAPI
+    ttl: 4320
+
+  - name: ThreatBook
+    ttl: 4320
+
+  - name: ThreatMiner
+    ttl: 4320
+
+  - name: URLScan
+    ttl: 4320
+
+  - name: VirusTotal
+    ttl: 4320
+
+  - name: Wayback
+    ttl: 10080
+
+  - name: Yahoo
+    ttl: 4320
+
+  - name: ZETAlytics
+    ttl: 10080
+
+# API key required data sources (uncomment and add keys)
+# Only enable these if you have valid API keys
+
+#  - name: AlienVault
+#    ttl: 4320
+#    credentials:
+#      apikey: YOUR_ALIENVAULT_API_KEY
+
+#  - name: BinaryEdge
+#    ttl: 4320
+#    credentials:
+#      apikey: YOUR_BINARYEDGE_API_KEY
+
+#  - name: Censys
+#    ttl: 10080
+#    credentials:
+#      apiid: YOUR_CENSYS_API_ID
+#      secret: YOUR_CENSYS_SECRET
+
+#  - name: Chaos
+#    ttl: 4320
+#    credentials:
+#      apikey: YOUR_API_KEY
+
+#  - name: Cloudflare
+#    ttl: 4320
+#    credentials:
+#      apikey: YOUR_CLOUDFLARE_API_KEY
+
+#  - name: DNSDB
+#    ttl: 4320
+#    credentials:
+#      apikey: YOUR_FARSIGHT_DNSDB_API_KEY
+
+#  - name: FacebookCT
+#    ttl: 10080
+#    credentials:
+#      app_id: YOUR_FACEBOOK_APP_ID
+#      secret: YOUR_FACEBOOK_APP_SECRET
+
+#  - name: GitHub
+#    ttl: 4320
+#    credentials:
+#      apikey: YOUR_GITHUB_TOKEN
+
+#  - name: GitLab
+#    ttl: 4320
+#    credentials:
+#      apikey: YOUR_GITLAB_TOKEN
+
+#  - name: Hunter
+#    ttl: 4320
+#    credentials:
+#      apikey: YOUR_HUNTER_API_KEY
+
+#  - name: IPinfo
+#    ttl: 10080
+#    credentials:
+#      apikey: YOUR_IPINFO_TOKEN
+
+#  - name: Netlas
+#    ttl: 4320
+#    credentials:
+#      apikey: YOUR_NETLAS_API_KEY
+
+#  - name: PassiveTotal
+#    ttl: 10080
+#    credentials:
+#      username: YOUR_PASSIVETOTAL_USERNAME
+#      apikey: YOUR_PASSIVETOTAL_API_KEY
+
+#  - name: ReconDev
+#    ttl: 4320
+#    credentials:
+#      apikey: YOUR_RECONDEV_API_KEY
+
+#  - name: SecurityTrails
+#    ttl: 4320
+#    credentials:
+#      apikey: YOUR_API_KEY
+
+#  - name: Shodan
+#    ttl: 10080
+#    credentials:
+#      apikey: YOUR_SHODAN_API_KEY
+
+#  - name: Spyse
+#    ttl: 4320
+#    credentials:
+#      apikey: YOUR_SPYSE_API_KEY
+
+#  - name: Twitter
+#    ttl: 4320
+#    credentials:
+#      apikey: YOUR_TWITTER_API_KEY
+#      secret: YOUR_TWITTER_API_SECRET
+#      bearer: YOUR_TWITTER_BEARER_TOKEN
+
+#  - name: Umbrella
+#    ttl: 4320
+#    credentials:
+#      apikey: YOUR_UMBRELLA_API_KEY
+
+#  - name: VirusTotal
+#    ttl: 4320
+#    credentials:
+#     apikey: YOUR_API_KEY
+
+#  - name: WhoisXML
+#    ttl: 10080
+#    credentials:
+#      apikey: YOUR_API_KEY
+
+#  - name: ZoomEye
+#    ttl: 4320
+#    credentials:
+#      apikey: YOUR_ZOOMEYE_API_KEY
