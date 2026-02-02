@@ -88,6 +88,7 @@ RESOLVERS="$HOME/resolvers.txt"
 WORDLIST="$HOME/wordlists/dns.txt"
 ALTDNS_WORDLIST="$HOME/wordlists/altdns_words.txt"
 AMASS_CONFIG="$HOME/.config/amass/config.yaml"
+DATASOURCES="$HOME/.config/amass/datasources.yaml"
 
 check_file() {
     local file="$1"
@@ -112,6 +113,18 @@ if [[ -f "$AMASS_CONFIG" ]]; then
     success "Amass Config: $AMASS_CONFIG"
 else
     warn "Amass Config: NOT FOUND at $AMASS_CONFIG (will use default)"
+    echo ""
+    info "Please copy the 'config.yaml' to: $HOME/.config/amass/config.yaml"
+    echo "Ensure the file is properly configured as per your environment."
+fi
+
+if [[ -f "$DATASOURCES" ]]; then
+    success "Datasources Config: $DATASOURCES"
+else
+    warn "Datasources Config: NOT FOUND at $DATASOURCES (will use default)"
+    echo ""
+    info "Please modify the 'datasources.yaml' file and copy it to: $HOME/.config/amass/datasources.yaml"
+    echo "Ensure you have your desired datasources configured properly."
 fi
 
 ########################################
