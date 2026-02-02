@@ -20,7 +20,7 @@ error() { echo -e "${RED}[✗]${NC} $*"; }
 ########################################
 check_prerequisites() {
     log "Checking prerequisites..."
-    
+
     # Check Go
     if ! command -v go &>/dev/null; then
         error "Go is not installed. Please install Go 1.21+ first:"
@@ -31,7 +31,7 @@ check_prerequisites() {
         exit 1
     fi
     success "Go found: $(go version)"
-    
+
     # Check Python3
     if ! command -v python3 &>/dev/null; then
         error "Python3 is not installed. Please install Python3 first:"
@@ -39,17 +39,18 @@ check_prerequisites() {
         exit 1
     fi
     success "Python3 found: $(python3 --version)"
-    
+
     # Check pip3
     if ! command -v pip3 &>/dev/null; then
         warn "pip3 not found, installing..."
         sudo apt-get update && sudo apt-get install -y python3-pip
     fi
     success "pip3 found"
-    
+
     # Ensure Go bin is in PATH
     export PATH=$PATH:$(go env GOPATH)/bin
-    echo 'export PATH=$PATH:$(go env GOPATH)/bin' >> ~/.bashrc
+    grep -qxF 'export PATH=$PATH:$(go env GOPATH)/bin' ~/.bashrc || \
+        echo 'export PATH=$PATH:$(go env GOPATH)/bin' >> ~/.bashrc
 }
 
 ########################################
@@ -61,12 +62,7 @@ install_subfinder() {
         success "subfinder already installed: $(subfinder -version 2>&1 | head -n1)"
     else
         go install -v github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest
-        if command -v subfinder &>/dev/null; then
-            success "subfinder installed: $(subfinder -version 2>&1 | head -n1)"
-        else
-            error "subfinder installation failed"
-            return 1
-        fi
+        command -v subfinder &>/dev/null && success "subfinder installed" || error "subfinder installation failed"
     fi
 }
 
@@ -76,12 +72,7 @@ install_assetfinder() {
         success "assetfinder already installed"
     else
         go install -v github.com/tomnomnom/assetfinder@latest
-        if command -v assetfinder &>/dev/null; then
-            success "assetfinder installed"
-        else
-            error "assetfinder installation failed"
-            return 1
-        fi
+        command -v assetfinder &>/dev/null && success "assetfinder installed" || error "assetfinder installation failed"
     fi
 }
 
@@ -91,12 +82,7 @@ install_puredns() {
         success "puredns already installed: $(puredns version 2>&1 || echo 'installed')"
     else
         go install github.com/d3mondev/puredns/v2@latest
-        if command -v puredns &>/dev/null; then
-            success "puredns installed: $(puredns version 2>&1 || echo 'installed')"
-        else
-            error "puredns installation failed"
-            return 1
-        fi
+        command -v puredns &>/dev/null && success "puredns installed" || error "puredns installation failed"
     fi
 }
 
@@ -106,12 +92,7 @@ install_httpx() {
         success "httpx already installed: $(httpx -version 2>&1 | head -n1)"
     else
         go install -v github.com/projectdiscovery/httpx/cmd/httpx@latest
-        if command -v httpx &>/dev/null; then
-            success "httpx installed: $(httpx -version 2>&1 | head -n1)"
-        else
-            error "httpx installation failed"
-            return 1
-        fi
+        command -v httpx &>/dev/null && success "httpx installed" || error "httpx installation failed"
     fi
 }
 
@@ -121,15 +102,11 @@ install_nuclei() {
         success "nuclei already installed: $(nuclei -version 2>&1 | head -n1)"
     else
         go install -v github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest
-        if command -v nuclei &>/dev/null; then
-            success "nuclei installed: $(nuclei -version 2>&1 | head -n1)"
+        command -v nuclei &>/dev/null && {
+            success "nuclei installed"
             log "Downloading nuclei templates..."
             nuclei -update-templates -silent
-            success "Nuclei templates downloaded"
-        else
-            error "nuclei installation failed"
-            return 1
-        fi
+        } || error "nuclei installation failed"
     fi
 }
 
@@ -141,13 +118,8 @@ install_dnsgen() {
     if command -v dnsgen &>/dev/null; then
         success "dnsgen already installed"
     else
-        python3 -m pip install dnsgen --break-system-packages 2>/dev/null || python3 -m pip install dnsgen
-        if command -v dnsgen &>/dev/null; then
-            success "dnsgen installed"
-        else
-            error "dnsgen installation failed"
-            return 1
-        fi
+        python3 -m pip install dnsgen --break-system-packages || python3 -m pip install dnsgen
+        command -v dnsgen &>/dev/null && success "dnsgen installed" || error "dnsgen installation failed"
     fi
 }
 
@@ -156,13 +128,8 @@ install_altdns() {
     if command -v altdns &>/dev/null; then
         success "altdns already installed"
     else
-        pip3 install py-altdns==1.0.2 --break-system-packages 2>/dev/null || pip3 install py-altdns==1.0.2
-        if command -v altdns &>/dev/null; then
-            success "altdns installed"
-        else
-            error "altdns installation failed"
-            return 1
-        fi
+        pip3 install py-altdns==1.0.2 --break-system-packages || pip3 install py-altdns==1.0.2
+        command -v altdns &>/dev/null && success "altdns installed" || error "altdns installation failed"
     fi
 }
 
@@ -174,24 +141,30 @@ install_amass() {
     if command -v amass &>/dev/null; then
         success "amass already installed: $(amass -version 2>&1 | head -n1)"
     else
-        if command -v apt-get &>/dev/null; then
-            sudo apt-get update
-            sudo apt-get install -y amass
-        elif command -v yum &>/dev/null; then
-            sudo yum install -y amass
-        elif command -v brew &>/dev/null; then
-            brew install amass
-        else
-            warn "Package manager not found. Installing from source..."
-            go install -v github.com/owasp-amass/amass/v4/...@master
-        fi
-        if command -v amass &>/dev/null; then
-            success "amass installed: $(amass -version 2>&1 | head -n1)"
-        else
-            error "amass installation failed"
-            return 1
-        fi
+        sudo apt-get update
+        sudo apt-get install -y amass || warn "Install from source if needed"
+        command -v amass &>/dev/null && success "amass installed" || error "amass installation failed"
     fi
+}
+
+install_massdns() {
+    log "Installing massdns..."
+    if command -v massdns &>/dev/null; then
+        success "massdns already installed"
+        return 0
+    fi
+
+    if command -v apt-get &>/dev/null; then
+        sudo apt-get update
+        sudo apt-get install -y massdns
+    else
+        warn "apt-get not found, installing massdns from source..."
+        git clone https://github.com/blechschmidt/massdns.git /tmp/massdns
+        (cd /tmp/massdns && make)
+        sudo cp /tmp/massdns/bin/massdns /usr/local/bin/
+    fi
+
+    command -v massdns &>/dev/null && success "massdns installed" || error "massdns installation failed"
 }
 
 ########################################
@@ -199,43 +172,26 @@ install_amass() {
 ########################################
 setup_wordlists() {
     log "Setting up wordlists and resolvers..."
-    
+
     WORDLIST_DIR="$HOME/wordlists"
     RESOLVERS_FILE="$HOME/resolvers.txt"
-    
+
     mkdir -p "$WORDLIST_DIR"
-    
-    # Download DNS wordlist if not exists
-    if [[ ! -f "$WORDLIST_DIR/dns.txt" ]]; then
-        log "Downloading DNS wordlist..."
-        wget -q -O "$WORDLIST_DIR/dns.txt" \
-            "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Discovery/DNS/subdomains-top1million-110000.txt" || \
-        wget -q -O "$WORDLIST_DIR/dns.txt" \
-            "https://wordlists-cdn.assetnote.io/data/manual/best-dns-wordlist.txt"
-        success "DNS wordlist downloaded: $WORDLIST_DIR/dns.txt"
-    else
-        success "DNS wordlist already exists: $WORDLIST_DIR/dns.txt"
-    fi
-    
-    # Download altdns wordlist if not exists
-    if [[ ! -f "$WORDLIST_DIR/altdns_words.txt" ]]; then
-        log "Downloading altdns wordlist..."
-        wget -q -O "$WORDLIST_DIR/altdns_words.txt" \
-            "https://raw.githubusercontent.com/infosec-au/altdns/master/words.txt"
-        success "Altdns wordlist downloaded: $WORDLIST_DIR/altdns_words.txt"
-    else
-        success "Altdns wordlist already exists: $WORDLIST_DIR/altdns_words.txt"
-    fi
-    
-    # Download resolvers if not exists
-    if [[ ! -f "$RESOLVERS_FILE" ]]; then
-        log "Downloading trusted DNS resolvers..."
-        wget -q -O "$RESOLVERS_FILE" \
-            "https://raw.githubusercontent.com/trickest/resolvers/main/resolvers-trusted.txt"
-        success "Resolvers downloaded: $RESOLVERS_FILE"
-    else
-        success "Resolvers already exist: $RESOLVERS_FILE"
-    fi
+
+    # DNS wordlist
+    [[ -f "$WORDLIST_DIR/dns.txt" ]] || wget -q -O "$WORDLIST_DIR/dns.txt" \
+        "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Discovery/DNS/subdomains-top1million-110000.txt" \
+        && success "DNS wordlist downloaded"
+
+    # Altdns wordlist
+    [[ -f "$WORDLIST_DIR/altdns_words.txt" ]] || wget -q -O "$WORDLIST_DIR/altdns_words.txt" \
+        "https://raw.githubusercontent.com/infosec-au/altdns/master/words.txt" \
+        && success "Altdns wordlist downloaded"
+
+    # Resolvers
+    [[ -f "$RESOLVERS_FILE" ]] || wget -q -O "$RESOLVERS_FILE" \
+        "https://raw.githubusercontent.com/trickest/resolvers/main/resolvers-trusted.txt" \
+        && success "Resolvers downloaded"
 }
 
 ########################################
@@ -243,19 +199,18 @@ setup_wordlists() {
 ########################################
 setup_amass_config() {
     log "Setting up Amass configuration..."
-    
     AMASS_DIR="$HOME/.config/amass"
     mkdir -p "$AMASS_DIR"
-    
+
     if [[ ! -f "$AMASS_DIR/config.yaml" ]]; then
         cat > "$AMASS_DIR/config.yaml" <<'EOF'
-# Amass Configuration File
+# Amass Configuration
 scope:
   # domains will be added dynamically by the script
 
 options:
   resolvers: /home/ubuntu/resolvers.txt
-  
+
 datasources:
   - name: AlienVault
     ttl: 4320
@@ -274,9 +229,10 @@ datasources:
   - name: Shodan
     ttl: 4320
 EOF
-        success "Amass config created: $AMASS_DIR/config.yaml"
+        success "Amass config created at $AMASS_DIR/config.yaml"
+        echo "Please also modify datasources.yaml if needed and copy to $AMASS_DIR/datasources.yaml with provided yaml file"
     else
-        success "Amass config already exists: $AMASS_DIR/config.yaml"
+        success "Amass config already exists"
     fi
 }
 
@@ -287,52 +243,4 @@ main() {
     echo ""
     log "========================================"
     log "Recon Tools Installation Script"
-    log "========================================"
-    echo ""
-    
-    check_prerequisites
-    echo ""
-    
-    # Track failures
-    FAILED_TOOLS=()
-    
-    # Install Go tools
-    install_subfinder || FAILED_TOOLS+=("subfinder")
-    install_assetfinder || FAILED_TOOLS+=("assetfinder")
-    install_puredns || FAILED_TOOLS+=("puredns")
-    install_httpx || FAILED_TOOLS+=("httpx")
-    install_nuclei || FAILED_TOOLS+=("nuclei")
-    
-    # Install Python tools
-    install_dnsgen || FAILED_TOOLS+=("dnsgen")
-    install_altdns || FAILED_TOOLS+=("altdns")
-    
-    # Install system packages
-    install_amass || FAILED_TOOLS+=("amass")
-    
-    # Setup wordlists and config
-    setup_wordlists
-    setup_amass_config
-    
-    echo ""
-    log "========================================"
-    log "Installation Summary"
-    log "========================================"
-    
-    if [[ ${#FAILED_TOOLS[@]} -eq 0 ]]; then
-        success "All tools installed successfully!"
-    else
-        error "The following tools failed to install:"
-        for tool in "${FAILED_TOOLS[@]}"; do
-            echo "  - $tool"
-        done
-        echo ""
-        warn "Please install failed tools manually"
-    fi
-    
-    echo ""
-    log "Run './check_tools.sh' to verify all tools are working"
-    echo ""
-}
-
-main "$@"
+    log "=====================
