@@ -57,59 +57,79 @@ check_prerequisites() {
 ########################################
 install_subfinder() {
     log "Installing subfinder..."
-    go install -v github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest
     if command -v subfinder &>/dev/null; then
-        success "subfinder installed: $(subfinder -version 2>&1 | head -n1)"
+        success "subfinder already installed: $(subfinder -version 2>&1 | head -n1)"
     else
-        error "subfinder installation failed"
-        return 1
+        go install -v github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest
+        if command -v subfinder &>/dev/null; then
+            success "subfinder installed: $(subfinder -version 2>&1 | head -n1)"
+        else
+            error "subfinder installation failed"
+            return 1
+        fi
     fi
 }
 
 install_assetfinder() {
     log "Installing assetfinder..."
-    go install -v github.com/tomnomnom/assetfinder@latest
     if command -v assetfinder &>/dev/null; then
-        success "assetfinder installed"
+        success "assetfinder already installed"
     else
-        error "assetfinder installation failed"
-        return 1
+        go install -v github.com/tomnomnom/assetfinder@latest
+        if command -v assetfinder &>/dev/null; then
+            success "assetfinder installed"
+        else
+            error "assetfinder installation failed"
+            return 1
+        fi
     fi
 }
 
 install_puredns() {
     log "Installing puredns..."
-    go install github.com/d3mondev/puredns/v2@latest
     if command -v puredns &>/dev/null; then
-        success "puredns installed: $(puredns version 2>&1 || echo 'installed')"
+        success "puredns already installed: $(puredns version 2>&1 || echo 'installed')"
     else
-        error "puredns installation failed"
-        return 1
+        go install github.com/d3mondev/puredns/v2@latest
+        if command -v puredns &>/dev/null; then
+            success "puredns installed: $(puredns version 2>&1 || echo 'installed')"
+        else
+            error "puredns installation failed"
+            return 1
+        fi
     fi
 }
 
 install_httpx() {
     log "Installing httpx..."
-    go install -v github.com/projectdiscovery/httpx/cmd/httpx@latest
     if command -v httpx &>/dev/null; then
-        success "httpx installed: $(httpx -version 2>&1 | head -n1)"
+        success "httpx already installed: $(httpx -version 2>&1 | head -n1)"
     else
-        error "httpx installation failed"
-        return 1
+        go install -v github.com/projectdiscovery/httpx/cmd/httpx@latest
+        if command -v httpx &>/dev/null; then
+            success "httpx installed: $(httpx -version 2>&1 | head -n1)"
+        else
+            error "httpx installation failed"
+            return 1
+        fi
     fi
 }
 
 install_nuclei() {
     log "Installing nuclei..."
-    go install -v github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest
     if command -v nuclei &>/dev/null; then
-        success "nuclei installed: $(nuclei -version 2>&1 | head -n1)"
-        log "Downloading nuclei templates..."
-        nuclei -update-templates -silent
-        success "Nuclei templates downloaded"
+        success "nuclei already installed: $(nuclei -version 2>&1 | head -n1)"
     else
-        error "nuclei installation failed"
-        return 1
+        go install -v github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest
+        if command -v nuclei &>/dev/null; then
+            success "nuclei installed: $(nuclei -version 2>&1 | head -n1)"
+            log "Downloading nuclei templates..."
+            nuclei -update-templates -silent
+            success "Nuclei templates downloaded"
+        else
+            error "nuclei installation failed"
+            return 1
+        fi
     fi
 }
 
@@ -118,23 +138,31 @@ install_nuclei() {
 ########################################
 install_dnsgen() {
     log "Installing dnsgen..."
-    python3 -m pip install dnsgen --break-system-packages 2>/dev/null || python3 -m pip install dnsgen
     if command -v dnsgen &>/dev/null; then
-        success "dnsgen installed"
+        success "dnsgen already installed"
     else
-        error "dnsgen installation failed"
-        return 1
+        python3 -m pip install dnsgen --break-system-packages 2>/dev/null || python3 -m pip install dnsgen
+        if command -v dnsgen &>/dev/null; then
+            success "dnsgen installed"
+        else
+            error "dnsgen installation failed"
+            return 1
+        fi
     fi
 }
 
 install_altdns() {
     log "Installing altdns..."
-    pip3 install py-altdns==1.0.2 --break-system-packages 2>/dev/null || pip3 install py-altdns==1.0.2
     if command -v altdns &>/dev/null; then
-        success "altdns installed"
+        success "altdns already installed"
     else
-        error "altdns installation failed"
-        return 1
+        pip3 install py-altdns==1.0.2 --break-system-packages 2>/dev/null || pip3 install py-altdns==1.0.2
+        if command -v altdns &>/dev/null; then
+            success "altdns installed"
+        else
+            error "altdns installation failed"
+            return 1
+        fi
     fi
 }
 
@@ -143,24 +171,26 @@ install_altdns() {
 ########################################
 install_amass() {
     log "Installing amass..."
-    
-    if command -v apt-get &>/dev/null; then
-        sudo apt-get update
-        sudo apt-get install -y amass
-    elif command -v yum &>/dev/null; then
-        sudo yum install -y amass
-    elif command -v brew &>/dev/null; then
-        brew install amass
-    else
-        warn "Package manager not found. Installing from source..."
-        go install -v github.com/owasp-amass/amass/v4/...@master
-    fi
-    
     if command -v amass &>/dev/null; then
-        success "amass installed: $(amass -version 2>&1 | head -n1)"
+        success "amass already installed: $(amass -version 2>&1 | head -n1)"
     else
-        error "amass installation failed"
-        return 1
+        if command -v apt-get &>/dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y amass
+        elif command -v yum &>/dev/null; then
+            sudo yum install -y amass
+        elif command -v brew &>/dev/null; then
+            brew install amass
+        else
+            warn "Package manager not found. Installing from source..."
+            go install -v github.com/owasp-amass/amass/v4/...@master
+        fi
+        if command -v amass &>/dev/null; then
+            success "amass installed: $(amass -version 2>&1 | head -n1)"
+        else
+            error "amass installation failed"
+            return 1
+        fi
     fi
 }
 
