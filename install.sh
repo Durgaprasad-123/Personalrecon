@@ -230,7 +230,7 @@ datasources:
     ttl: 4320
 EOF
         success "Amass config created at $AMASS_DIR/config.yaml"
-        echo "Please also modify datasources.yaml if needed and copy to $AMASS_DIR/datasources.yaml with provided yaml file"
+        echo "Please also modify datasources.yaml if needed and copy to $AMASS_DIR/datasources.yaml"
     else
         success "Amass config already exists"
     fi
@@ -243,4 +243,51 @@ main() {
     echo ""
     log "========================================"
     log "Recon Tools Installation Script"
-    log "=====================
+    log "========================================"
+    echo ""
+
+    check_prerequisites
+    echo ""
+
+    FAILED_TOOLS=()
+
+    # Go tools
+    install_subfinder || FAILED_TOOLS+=("subfinder")
+    install_assetfinder || FAILED_TOOLS+=("assetfinder")
+    install_massdns || FAILED_TOOLS+=("massdns")
+    install_puredns || FAILED_TOOLS+=("puredns")
+    install_httpx || FAILED_TOOLS+=("httpx")
+    install_nuclei || FAILED_TOOLS+=("nuclei")
+
+    # Python tools
+    install_dnsgen || FAILED_TOOLS+=("dnsgen")
+    install_altdns || FAILED_TOOLS+=("altdns")
+
+    # System packages
+    install_amass || FAILED_TOOLS+=("amass")
+
+    # Setup wordlists and Amass config
+    setup_wordlists
+    setup_amass_config
+
+    echo ""
+    log "========================================"
+    log "Installation Summary"
+    log "========================================"
+
+    if [[ ${#FAILED_TOOLS[@]} -eq 0 ]]; then
+        success "All tools installed successfully!"
+    else
+        error "The following tools failed to install:"
+        for tool in "${FAILED_TOOLS[@]}"; do
+            echo "  - $tool"
+        done
+        warn "Please install failed tools manually"
+    fi
+
+    echo ""
+    log "Run './check_tools.sh' to verify all tools are working"
+    echo ""
+}
+
+main "$@"
