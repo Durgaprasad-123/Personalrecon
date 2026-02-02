@@ -1,0 +1,110 @@
+ ~/.config/amass/config.yaml
+# Amass v4 Configuration
+# Place at: /home/ubuntu/.config/amass/config.yaml
+
+scope:
+  # domains will be added dynamically by the script
+  # no need to hardcode them here
+  ports:
+    - 80
+    - 443
+    - 8000
+    - 8080
+    - 8443
+    - 8888
+
+options:
+  # Point to your datasources configuration
+  datasources: "$HOME/.config/amass/datasources.yaml"
+
+  # Custom resolvers - using your trusted resolvers
+  resolvers:
+    - 1.1.1.1
+    - 8.8.8.8
+    - 4.4.4.4
+  # Resolver configuration - prevents the warning
+  max_dns_queries: 200
+
+  # Database storage (optional - comment out if not using)
+  # database: "bolt://localhost:7687"
+
+  # Brute force - disabled for passive recon
+  bruteforce:
+    enabled: false
+    recursive: false
+    min_for_recursive: 1
+    wordlists:
+      - "/home/ubuntu/wordlists/dns.txt"
+
+  # Alterations - disabled for passive recon
+  alterations:
+    enabled: false
+    minimum_for_word_flip: 2
+    edit_distance: 1
+    wordlists:
+      - "/home/ubuntu/wordlists/altdns_words.txt"
+
+  # Default transformation values
+  default_transform_values:
+    ttl: 1440  # 1 day in minutes
+    confidence: 50
+    priority: 5
+
+# Transformation TTL settings
+transformations:
+  Account->ALL:
+    ttl: 10080  # 7 days
+  AutnumRecord->ALL:
+    ttl: 43200  # 30 days
+  AutonomousSystem->ALL:
+    ttl: 43200  # 30 days
+  AutonomousSystem->RDAP:
+    ttl: 43200
+  ContactRecord->ALL:
+    ttl: 43200
+  DomainRecord->ALL:
+    ttl: 43200
+  File->ALL:
+    ttl: 1440
+  FQDN->ALL:
+    ttl: 1440
+  FQDN->DNS:
+    ttl: 1440
+  FQDN->DomainRecord:
+    ttl: 43200
+  FundsTransfer->ALL:
+    ttl: 10080
+  Identifier->ALL:
+    ttl: 43200
+  Identifier->GLEIF:
+    ttl: 43200
+  Identifier->RDAP:
+    ttl: 43200
+  IPAddress->ALL:
+    ttl: 1440
+  IPNetRecord->ALL:
+    ttl: 43200
+  Location->ALL:
+    ttl: 43200
+  Netblock->ALL:
+    ttl: 43200
+  Netblock->RDAP:
+    ttl: 43200
+  Organization->ALL:
+    ttl: 43200
+  Organization->GLEIF:
+    ttl: 43200
+  Person->ALL:
+    ttl: 43200
+  Phone->ALL:
+    ttl: 10080
+  Product->ALL:
+    ttl: 10080
+  ProductRelease->ALL:
+    ttl: 10080
+  Service->ALL:
+    ttl: 1440
+  TLSCertificate->ALL:
+    ttl: 10080
+  URL->ALL:
+    ttl: 1440
