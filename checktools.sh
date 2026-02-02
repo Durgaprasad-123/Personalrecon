@@ -57,7 +57,7 @@ for tool in "${TOOLS[@]}"; do
                 VERSION=$(${tool} -version 2>&1 | head -n1 || echo "")
                 ;;
             puredns)
-                VERSION=$(${tool} version 2>&1 || echo "installed")
+                VERSION=$(${tool} -v 2>&1 || echo "installed")
                 ;;
             ffuf)
                 VERSION=$(${tool} -V 2>&1 | head -n1 || echo "")
