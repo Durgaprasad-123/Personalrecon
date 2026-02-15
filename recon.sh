@@ -80,7 +80,7 @@ trap 'exit 130' INT TERM
 ########################################
 show_help() {
   echo -e "${BOLD}${CYAN}════════════════════════════════════════════════════════════╗${RESET}"
-  echo -e "${BOLD}  Automated Reconnaissance Script${RESET}"
+  echo -e "${BOLD}  Automated Reconnaissance Script (AGGRESSIVE)${RESET}"
   echo -e "${CYAN}════════════════════════════════════════════════════════════╝${RESET}"
   echo ""
   echo -e "${BOLD}Usage:${RESET}"
@@ -99,8 +99,7 @@ show_help() {
   echo -e "  ${CYAN}dns${RESET}                DNS resolution and validation"
   echo -e "  ${CYAN}recon_intel${RESET}        Cloud assets and takeover detection"
   echo -e "  ${CYAN}http_discovery${RESET}     HTTP probing and tech detection"
-  echo -e "  ${CYAN}http_exploitation${RESET}  High-value target identification"
-  echo -e "  ${CYAN}nuclei${RESET}             Vulnerability scanning"
+  echo -e "  ${CYAN}nuclei${RESET}             AGGRESSIVE vulnerability scanning (MEDIUM+ only)"
   echo ""
   echo -e "${BOLD}Examples:${RESET}"
   echo -e "  $(basename "$0") ${GREEN}example.com${RESET}"
@@ -158,7 +157,7 @@ fi
 ########################################
 # STAGES
 ########################################
-STAGES=(passive bruteforce permutations dns recon_intel http_discovery http_exploitation nuclei)
+STAGES=(passive bruteforce permutations dns recon_intel http_discovery nuclei)
 
 stage_exists() {
   for s in "${STAGES[@]}"; do
@@ -188,9 +187,12 @@ should_run() {
 ########################################
 HTTP_THREADS=50
 HTTP_RATE=120
-NUCLEI_CONCURRENCY=30
-NUCLEI_RATE=200
-NUCLEI_TIMEOUT=10
+
+# Nuclei will be configured dynamically based on target count
+NUCLEI_BASE_CONCURRENCY=50
+NUCLEI_BASE_RATE=300
+NUCLEI_TIMEOUT=15
+NUCLEI_MAX_HOST_ERROR=30
 
 RESOLVERS="$HOME/resolvers.txt"
 WORDLIST="$HOME/wordlists/dns.txt"
@@ -200,7 +202,7 @@ CUSTOM_NUCLEI_TEMPLATES="$HOME/custom-nuclei-templates"
 OUTPUT_ROOT="${OUTPUT_ROOT:-$PROJECT_ROOT/output}"
 BASE_DIR="$OUTPUT_ROOT/$domain"
 
-mkdir -p "$BASE_DIR"/{passive,bruteforce,permutations,dns,final,tmp,logs,recon_intel,http_discovery,http_exploitation,nuclei/{raw,processed,json}}
+mkdir -p "$BASE_DIR"/{passive,bruteforce,permutations,dns,final,tmp,logs,recon_intel,http_discovery,nuclei/{raw,processed,json}}
 
 LOG_FILE="$BASE_DIR/logs/recon.log"
 if [[ "$VERBOSE" == true ]]; then
@@ -214,11 +216,12 @@ fi
 ########################################
 clear
 echo -e "${CYAN}╔════════════════════════════════════════════════════════════╗${RESET}"
-echo -e "${CYAN}║${RESET}          ${BOLD}${GREEN}AUTOMATED RECONNAISSANCE FRAMEWORK${RESET}                ${CYAN}║${RESET}"
+echo -e "${CYAN}║${RESET}     ${BOLD}${GREEN}AGGRESSIVE RECONNAISSANCE FRAMEWORK (MEDIUM+ ONLY)${RESET}     ${CYAN}║${RESET}"
 echo -e "${CYAN}╠════════════════════════════════════════════════════════════╣${RESET}"
 echo -e "${CYAN}║${RESET}  Target: ${YELLOW}${BOLD}$(printf '%-50s' "$domain")${RESET} ${CYAN}║${RESET}"
 echo -e "${CYAN}║${RESET}  Output: ${DIM}$(printf '%-50s' "$BASE_DIR")${RESET} ${CYAN}║${RESET}"
-echo -e "${CYAN}║${RESET}  BY:     ${BOLD}${GREEN} PRASAD${RESET}"
+echo -e "${CYAN}║${RESET}  BY:     ${BOLD}${GREEN}PRASAD${RESET}                                          ${CYAN}║${RESET}"
+echo -e "${CYAN}║${RESET}  Mode:   ${BOLD}${RED}HIGH-VALUE EXPLOITS ONLY${RESET}                        ${CYAN}║${RESET}"
 echo -e "${CYAN}║${RESET}  Start:  ${GREEN}$(printf '%-50s' "$START_STAGE")${RESET} ${CYAN}║${RESET}"
 echo -e "${CYAN}╚════════════════════════════════════════════════════════════╝${RESET}"
 echo ""
@@ -246,7 +249,7 @@ success "All required tools are installed"
 # PASSIVE
 ########################################
 if should_run passive; then
-  stage_header "1/8" "PASSIVE ENUMERATION"
+  stage_header "1/7" "PASSIVE ENUMERATION"
 
   progress "Running subfinder..."
   subfinder -d "$domain" -silent -all > "$BASE_DIR/passive/subfinder.txt" || true
@@ -268,7 +271,7 @@ fi
 # BRUTEFORCE
 ########################################
 if should_run bruteforce; then
-  stage_header "2/8" "DNS BRUTEFORCE"
+  stage_header "2/7" "DNS BRUTEFORCE"
 
   progress "Running puredns bruteforce..."
   puredns bruteforce "$WORDLIST" "$domain" -r "$RESOLVERS" -w "$BASE_DIR/bruteforce/raw.txt" || true
@@ -288,7 +291,7 @@ fi
 # PERMUTATIONS
 ########################################
 if should_run permutations; then
-  stage_header "3/8" "DOMAIN PERMUTATIONS"
+  stage_header "3/7" "DOMAIN PERMUTATIONS"
 
   progress "Generating permutations with dnsgen..."
   dnsgen "$BASE_DIR/final/resolved_fqdns.txt" > "$BASE_DIR/permutations/dnsgen_raw.txt" || true
@@ -301,13 +304,10 @@ if should_run permutations; then
 fi
 
 ########################################
-# DNS
-########################################
-########################################
-# DNS RESOLUTION (FIXED)
+# DNS RESOLUTION
 ########################################
 if should_run dns; then
-  stage_header "4/8" "DNS RESOLUTION"
+  stage_header "4/7" "DNS RESOLUTION"
 
   progress "Combining all DNS candidates..."
   safe_cat "$BASE_DIR/final/resolved_fqdns.txt" \
@@ -320,7 +320,6 @@ if should_run dns; then
     -r "$RESOLVERS" --wildcard-tests 5 \
     --write-massdns "$BASE_DIR/tmp/puredns.snl" || true
 
-  # FIX: Extract domains from massdns output AND filter to only your target domain
   awk '{print $1}' "$BASE_DIR/tmp/puredns.snl" 2>/dev/null | \
     sed 's/\.$//' | \
     grep -E "\.${domain}\$|^${domain}\$" | \
@@ -328,7 +327,6 @@ if should_run dns; then
 
   success "Final resolved domains: ${BOLD}${GREEN}$(wc -l < "$BASE_DIR/dns/resolved_domains.txt" || echo 0)${RESET}"
 
-  # Optional: Save CNAME mappings for reference (without adding CNAMEs to resolved list)
   progress "Extracting CNAME mappings for reference..."
   grep "CNAME" "$BASE_DIR/tmp/puredns.snl" 2>/dev/null | \
     awk -v domain="$domain" '{
@@ -350,27 +348,120 @@ if should_run dns; then
 fi
 
 ########################################
-# RECON INTEL
+# RECON INTEL (ENHANCED)
 ########################################
 if should_run recon_intel; then
-  stage_header "5/8" "RECONNAISSANCE INTELLIGENCE"
+  stage_header "5/7" "RECONNAISSANCE INTELLIGENCE"
 
-  progress "Identifying cloud-hosted assets..."
-  grep -Eai 'amazonaws|s3|azure|cloudfront|cloudflare|fastly|google' \
+  progress "Identifying cloud-hosted assets (comprehensive scan)..."
+  
+  grep -Eai 'amazonaws|s3-|s3\.|cloudfront\.net|elb\.amazonaws|ec2-|rds\.amazonaws|lambda\.amazonaws|
+azure|azurewebsites|cloudapp\.azure|windows\.net|blob\.core|azure-api|trafficmanager|
+digitalocean|droplet|
+heroku|herokuapp|
+github\.io|github\.com/|github\.dev|gitlab\.io|gitlab\.com/|
+netlify|vercel|vercel\.app|now\.sh|
+firebase|firebaseapp|cloudfunctions\.net|appspot\.com|
+cloudflare\.com|cloudflare\.net|workers\.dev|pages\.dev|
+fastly|fastly\.net|
+akamai|edgekey\.net|edgesuite\.net|
+google|gcp|googleapis\.com|appengine|cloud\.google|
+cdn\.shopify|myshopify\.com|
+wp-engine|wpengine|
+pantheon|pantheonsite|
+acquia-sites|
+webflow\.io|
+wix\.com|wixsite\.com|
+squarespace\.com|
+cargo\.site|
+ghost\.io|
+zendesk\.com|
+hubspot|hubspot\.com|hs-sites\.com|
+salesforce|force\.com|visualforce\.com|
+intercom|intercom\.io|
+discourse\.org|
+bynder|getbynder|
+bitly|bit\.ly|
+rebrandly\.com|
+short\.io|
+tinyurl\.com|
+ow\.ly|
+t\.co|
+links\.io|
+linktr\.ee' \
     "$BASE_DIR/dns/resolved_domains.txt" \
     > "$BASE_DIR/recon_intel/cloud_assets.txt" 2>/dev/null || touch "$BASE_DIR/recon_intel/cloud_assets.txt"
-  echo -e "    ${DIM}Cloud assets: ${CYAN}$(wc -l < "$BASE_DIR/recon_intel/cloud_assets.txt" 2>/dev/null || echo 0)${RESET}"
+  
+  CLOUD_COUNT=$(wc -l < "$BASE_DIR/recon_intel/cloud_assets.txt" 2>/dev/null || echo 0)
+  echo -e "    ${DIM}Cloud assets: ${CYAN}${CLOUD_COUNT}${RESET}"
+  
+  if [[ $CLOUD_COUNT -gt 0 ]]; then
+    progress "Categorizing cloud providers..."
+    grep -Eai 'amazonaws|s3|cloudfront|elb|ec2|rds|lambda' "$BASE_DIR/recon_intel/cloud_assets.txt" 2>/dev/null | sort -u > "$BASE_DIR/recon_intel/aws_assets.txt" || touch "$BASE_DIR/recon_intel/aws_assets.txt"
+    grep -Eai 'azure|azurewebsites|cloudapp|windows\.net|blob\.core' "$BASE_DIR/recon_intel/cloud_assets.txt" 2>/dev/null | sort -u > "$BASE_DIR/recon_intel/azure_assets.txt" || touch "$BASE_DIR/recon_intel/azure_assets.txt"
+    grep -Eai 'google|gcp|googleapis|appengine|appspot|cloudfunctions' "$BASE_DIR/recon_intel/cloud_assets.txt" 2>/dev/null | sort -u > "$BASE_DIR/recon_intel/gcp_assets.txt" || touch "$BASE_DIR/recon_intel/gcp_assets.txt"
+    grep -Eai 'cloudflare|workers\.dev|pages\.dev' "$BASE_DIR/recon_intel/cloud_assets.txt" 2>/dev/null | sort -u > "$BASE_DIR/recon_intel/cloudflare_assets.txt" || touch "$BASE_DIR/recon_intel/cloudflare_assets.txt"
+    grep -Eai 'digitalocean|droplet' "$BASE_DIR/recon_intel/cloud_assets.txt" 2>/dev/null | sort -u > "$BASE_DIR/recon_intel/digitalocean_assets.txt" || touch "$BASE_DIR/recon_intel/digitalocean_assets.txt"
+    
+    echo -e "    ${DIM}├─ AWS: ${GREEN}$(wc -l < "$BASE_DIR/recon_intel/aws_assets.txt" 2>/dev/null || echo 0)${RESET}"
+    echo -e "    ${DIM}├─ Azure: ${GREEN}$(wc -l < "$BASE_DIR/recon_intel/azure_assets.txt" 2>/dev/null || echo 0)${RESET}"
+    echo -e "    ${DIM}├─ GCP: ${GREEN}$(wc -l < "$BASE_DIR/recon_intel/gcp_assets.txt" 2>/dev/null || echo 0)${RESET}"
+    echo -e "    ${DIM}├─ Cloudflare: ${GREEN}$(wc -l < "$BASE_DIR/recon_intel/cloudflare_assets.txt" 2>/dev/null || echo 0)${RESET}"
+    echo -e "    ${DIM}└─ DigitalOcean: ${GREEN}$(wc -l < "$BASE_DIR/recon_intel/digitalocean_assets.txt" 2>/dev/null || echo 0)${RESET}"
+  fi
 
-  progress "Detecting potential subdomain takeover candidates..."
+  progress "Detecting potential subdomain takeover candidates (enhanced)..."
   touch "$BASE_DIR/recon_intel/takeover_dns_candidates.txt"
   touch "$BASE_DIR/recon_intel/takeover_mapping.txt"
 
   if [[ -s "$BASE_DIR/tmp/puredns.snl" ]]; then
-    # Filter for YOUR domain CNAMEs pointing to vulnerable services
-    grep -Eai "\.${domain}\. CNAME.*(azurewebsites|cloudapp|azure-api|trafficmanager|blob\.core\.windows\.net|herokuapp|pantheonsite|ghost\.io|zendesk|github\.io|s3\.amazonaws|getbynder|bitly)" \
+    grep -Eai "\.${domain}\. CNAME.*(
+azurewebsites\.net|cloudapp\.azure\.com|azure-api\.net|trafficmanager\.net|blob\.core\.windows\.net|
+herokuapp\.com|herokussl\.com|
+pantheonsite\.io|pantheon\.io|
+ghost\.io|
+zendesk\.com|
+github\.io|github\.com|
+gitlab\.io|gitlab\.com|
+s3\.amazonaws\.com|s3-website|s3-.*\.amazonaws\.com|
+getbynder\.com|
+bitly\.com|bit\.ly|
+fastly\.net|
+shopify\.com|myshopify\.com|
+wordpress\.com|
+tumblr\.com|
+surge\.sh|
+cargocollective\.com|
+statuspage\.io|
+freshdesk\.com|
+pingdom\.com|
+tilda\.ws|
+campaignmonitor\.com|
+acquia-sites\.com|
+brightcove\.com|
+bigcartel\.com|
+activehosted\.com|
+smugmug\.com|
+helpjuice\.com|
+helpscout\.net|
+desk\.com|
+teamwork\.com|
+unbounce\.com|
+cargo\.site|
+statuspage\.io|
+uservoice\.com|
+getresponse\.com|
+vend\.com|
+jetbrains\.space|
+webflow\.io|
+intercom\.help|
+kajabi\.com|
+thinkific\.com|
+teachable\.com|
+launchrock\.com|
+readme\.io)" \
       "$BASE_DIR/tmp/puredns.snl" 2>/dev/null | \
       awk -v domain="$domain" '{
-        # Only process if first column ends with our target domain
         if ($1 ~ "\\." domain "\\.$") {
           sub(/\.$/, "", $1);
           for(i=2; i<=NF; i++) {
@@ -386,7 +477,6 @@ if should_run recon_intel; then
       }' > "$BASE_DIR/recon_intel/takeover_mapping.txt" || true
   fi
 
-  # Combine YOUR subdomains only
   {
     cat "$BASE_DIR/recon_intel/cloud_assets.txt" 2>/dev/null
     cat "$BASE_DIR/recon_intel/takeover_dns_candidates.txt" 2>/dev/null
@@ -399,16 +489,21 @@ if should_run recon_intel; then
   else
     success "No obvious takeover candidates detected"
   fi
+  
+  progress "Analyzing DNS patterns for security insights..."
+  grep -E ':[0-9]+' "$BASE_DIR/dns/resolved_domains.txt" 2>/dev/null > "$BASE_DIR/recon_intel/non_standard_ports.txt" || touch "$BASE_DIR/recon_intel/non_standard_ports.txt"
+  grep -oE '\b([0-9]{1,3}\.){3}[0-9]{1,3}\b' "$BASE_DIR/tmp/puredns.snl" 2>/dev/null | sort -u > "$BASE_DIR/recon_intel/ip_addresses.txt" || touch "$BASE_DIR/recon_intel/ip_addresses.txt"
+  
+  success "Intelligence gathering complete"
 fi
 
 ########################################
 # HTTP DISCOVERY
 ########################################
 if should_run http_discovery; then
-  stage_header "6/8" "HTTP SERVICE DISCOVERY"
+  stage_header "6/7" "HTTP SERVICE DISCOVERY"
 
   HTTPX_JSON="$BASE_DIR/http_discovery/httpx_full.json"
-  HTTPX_TXT="$BASE_DIR/http_discovery/httpx_full.txt"
 
   DOMAIN_COUNT=$(wc -l < "$BASE_DIR/dns/resolved_domains.txt" || echo 0)
   progress "Probing ${YELLOW}$DOMAIN_COUNT${RESET} domains with httpx..."
@@ -429,15 +524,19 @@ if should_run http_discovery; then
 
     jq -r 'select(.status_code == 200) | .url' "$HTTPX_JSON" 2>/dev/null \
       > "$BASE_DIR/http_discovery/status_200.txt" || touch "$BASE_DIR/http_discovery/status_200.txt"
+    jq -r 'select(.status_code == 401) | .url' "$HTTPX_JSON" 2>/dev/null \
+      > "$BASE_DIR/http_discovery/status_401.txt" || touch "$BASE_DIR/http_discovery/status_401.txt"
     jq -r 'select(.status_code == 403) | .url' "$HTTPX_JSON" 2>/dev/null \
       > "$BASE_DIR/http_discovery/status_403.txt" || touch "$BASE_DIR/http_discovery/status_403.txt"
     jq -r 'select(.status_code == 404) | .url' "$HTTPX_JSON" 2>/dev/null \
       > "$BASE_DIR/http_discovery/status_404.txt" || touch "$BASE_DIR/http_discovery/status_404.txt"
+    jq -r 'select(.status_code >= 500 and .status_code < 600) | .url' "$HTTPX_JSON" 2>/dev/null \
+      > "$BASE_DIR/http_discovery/status_5xx.txt" || touch "$BASE_DIR/http_discovery/status_5xx.txt"
     jq -r '.tech[]?' "$HTTPX_JSON" 2>/dev/null | sort -u \
       > "$BASE_DIR/http_discovery/technologies.txt" || touch "$BASE_DIR/http_discovery/technologies.txt"
 
     success "Live HTTP services: ${BOLD}${GREEN}$(wc -l < "$BASE_DIR/http_discovery/live_urls.txt" || echo 0)${RESET}"
-    echo -e "    ${DIM}200 OK: ${GREEN}$(wc -l < "$BASE_DIR/http_discovery/status_200.txt" 2>/dev/null || echo 0)${RESET} ${DIM}| 403: ${YELLOW}$(wc -l < "$BASE_DIR/http_discovery/status_403.txt" 2>/dev/null || echo 0)${RESET}${RESET}"
+    echo -e "    ${DIM}200 OK: ${GREEN}$(wc -l < "$BASE_DIR/http_discovery/status_200.txt" 2>/dev/null || echo 0)${RESET} ${DIM}| 401: ${YELLOW}$(wc -l < "$BASE_DIR/http_discovery/status_401.txt" 2>/dev/null || echo 0)${RESET} ${DIM}| 403: ${YELLOW}$(wc -l < "$BASE_DIR/http_discovery/status_403.txt" 2>/dev/null || echo 0)${RESET}${RESET}"
   else
     warn "No httpx output generated"
     touch "$BASE_DIR/http_discovery/live_urls.txt"
@@ -445,30 +544,10 @@ if should_run http_discovery; then
 fi
 
 ########################################
-# HTTP EXPLOITATION
-########################################
-if should_run http_exploitation; then
-  stage_header "7/8" "HIGH-VALUE TARGET IDENTIFICATION"
-
-  progress "Identifying admin/api/auth endpoints..."
-  grep -Eai '(admin|api|auth|login|dashboard|panel|console|staging|dev|test|internal)' \
-    "$BASE_DIR/http_discovery/live_urls.txt" 2>/dev/null \
-    | sort -u > "$BASE_DIR/http_exploitation/high_value_urls.txt" || touch "$BASE_DIR/http_exploitation/high_value_urls.txt"
-
-  HV_COUNT=$(wc -l < "$BASE_DIR/http_exploitation/high_value_urls.txt" || echo 0)
-  if [[ $HV_COUNT -gt 0 ]]; then
-    success "High-value targets: ${BOLD}${YELLOW}$HV_COUNT${RESET}"
-    [[ "$VERBOSE" == true ]] && head -10 "$BASE_DIR/http_exploitation/high_value_urls.txt" | sed 's/^/    /'
-  else
-    log "No high-value targets identified"
-  fi
-fi
-
-########################################
-# NUCLEI SCAN (ENHANCED)
+# NUCLEI SCAN (AGGRESSIVE - MEDIUM+ ONLY)
 ########################################
 if should_run nuclei; then
-  stage_header "8/8" "VULNERABILITY SCANNING (NUCLEI)"
+  stage_header "7/7" "AGGRESSIVE VULNERABILITY SCANNING (MEDIUM+ ONLY)"
 
   run_nuclei_scan() {
     local target_file="$1"
@@ -476,7 +555,7 @@ if should_run nuclei; then
     local severity="$3"
     local output_file="$4"
     local description="$5"
-    local exclude_tags="${6:-dos}"
+    local exclude_tags="${6:-dos,fuzz,intrusive,headless,generic,token}"
     mkdir -p "$(dirname "$output_file")"
 
     if [[ ! -f "$target_file" ]] || [[ ! -s "$target_file" ]]; then
@@ -486,12 +565,51 @@ if should_run nuclei; then
 
     local count
     count=$(wc -l < "$target_file")
-    progress "${CYAN}${description}${RESET} (${count} targets)"
+    
+    # INTELLIGENT CONCURRENCY CALCULATION
+    # Rule: concurrency must be <= max-host-error to avoid warnings
+    # Also scale down for small target sets
+    local concurrency
+    local max_host_error
+    local rate_limit
+    
+    if [[ $count -le 50 ]]; then
+      # Small target set: conservative settings
+      concurrency=10
+      max_host_error=20
+      rate_limit=150
+    elif [[ $count -le 150 ]]; then
+      # Medium target set: moderate settings
+      concurrency=20
+      max_host_error=30
+      rate_limit=200
+    elif [[ $count -le 500 ]]; then
+      # Large target set: balanced settings
+      concurrency=30
+      max_host_error=40
+      rate_limit=250
+    else
+      # Very large target set: aggressive but safe
+      concurrency=40
+      max_host_error=50
+      rate_limit=300
+    fi
+    
+    # Safety check: ensure concurrency <= max_host_error
+    if [[ $concurrency -gt $max_host_error ]]; then
+      concurrency=$max_host_error
+    fi
+    
+    progress "${CYAN}${description}${RESET} (${count} targets, concurrency: ${concurrency})"
 
     nuclei -l "$target_file" -t "$templates" -severity "$severity" -et "$exclude_tags" \
       -o "$output_file" -json-export "${output_file}.json" -silent \
-      -timeout 10 -retries 1 -rate-limit 100 -bulk-size 25 -concurrency 15 \
-      -max-host-error 10 -follow-host-redirects \
+      -timeout "$NUCLEI_TIMEOUT" -retries 1 \
+      -rate-limit "$rate_limit" \
+      -bulk-size 25 \
+      -concurrency "$concurrency" \
+      -max-host-error "$max_host_error" \
+      -follow-host-redirects \
       -disable-update-check 2>"${output_file}_error.log" || true
 
     local results
@@ -503,134 +621,232 @@ if should_run nuclei; then
     fi
   }
 
-  # Optimize targets
+  # Prepare EXPLOIT-FOCUSED targets only
   if [[ -f "$BASE_DIR/http_discovery/live_urls.txt" ]] && [[ -s "$BASE_DIR/http_discovery/live_urls.txt" ]]; then
-    progress "Optimizing target URLs..."
+    progress "Building exploit-focused target list..."
+    
     {
       cat "$BASE_DIR/http_discovery/live_urls.txt"
-      while IFS= read -r url; do
-        base=$(echo "$url" | sed 's/\/$//')
-        for path in /admin /login /api /v1 /graphql /console /.env /config.json /swagger.json; do
-          echo "$base$path"
-        done
-      done < "$BASE_DIR/http_discovery/live_urls.txt"
-    } | sort -u > "$BASE_DIR/nuclei/optimized_targets.txt"
-    success "Optimized: $(wc -l < "$BASE_DIR/nuclei/optimized_targets.txt") URLs"
+      
+      # Add CRITICAL exploit endpoints for 200 OK hosts
+      if [[ -s "$BASE_DIR/http_discovery/status_200.txt" ]]; then
+        while IFS= read -r url; do
+          base=$(echo "$url" | sed 's/\/$//')
+          for path in \
+            /.env /.env.production /.env.local /.env.development \
+            /.git/config /.git/HEAD /.git/index \
+            /.aws/credentials /.aws/config \
+            /config.json /config.yml /config.yaml /configuration.yml \
+            /.htpasswd /web.config /WEB-INF/web.xml \
+            /server-status /server-info \
+            /actuator/env /actuator/heapdump /actuator/mappings /actuator/metrics \
+            /swagger.json /swagger-ui.html /api-docs /openapi.json \
+            /graphql /graphiql \
+            /debug/pprof /debug/vars /_profiler \
+            /.dockerenv /Dockerfile /docker-compose.yml; do
+            echo "$base$path"
+          done
+        done < "$BASE_DIR/http_discovery/status_200.txt"
+      fi
+    } | sort -u > "$BASE_DIR/nuclei/scan_targets.txt"
+    
+    success "Prepared: $(wc -l < "$BASE_DIR/nuclei/scan_targets.txt") exploit-focused targets"
   else
-    touch "$BASE_DIR/nuclei/optimized_targets.txt"
+    touch "$BASE_DIR/nuclei/scan_targets.txt"
     warn "No live URLs found, skipping nuclei scan"
     exit 0
   fi
 
-  # Phase 1: Quick Wins
-  progress "Phase 1: Quick Win Detection"
-  run_nuclei_scan "$BASE_DIR/nuclei/optimized_targets.txt" \
-    "$NUCLEI_TEMPLATES/http/exposures/,$NUCLEI_TEMPLATES/file/" \
-    "info,low,medium,high,critical" "$BASE_DIR/nuclei/raw/exposed_files.txt" "Exposed Files"
+  # =================================================================
+  # PHASE 1: CRITICAL EXPOSURES (File Leaks, Configs, Secrets)
+  # =================================================================
+  progress "Phase 1: Critical File Exposures & Secrets"
+  
+  run_nuclei_scan "$BASE_DIR/nuclei/scan_targets.txt" \
+    "$NUCLEI_TEMPLATES/http/exposures/" \
+    "medium,high,critical" "$BASE_DIR/nuclei/raw/01_exposures.txt" "Critical Exposures" "dos,fuzz,token"
 
-  run_nuclei_scan "$BASE_DIR/nuclei/optimized_targets.txt" \
+  # =================================================================
+  # PHASE 2: AUTHENTICATION ISSUES
+  # =================================================================
+  progress "Phase 2: Authentication Bypasses & Default Credentials"
+  
+  run_nuclei_scan "$BASE_DIR/nuclei/scan_targets.txt" \
     "$NUCLEI_TEMPLATES/http/default-logins/" \
-    "medium,high,critical" "$BASE_DIR/nuclei/raw/default_creds.txt" "Default Credentials"
+    "medium,high,critical" "$BASE_DIR/nuclei/raw/02_default_creds.txt" "Default Credentials" "dos,fuzz"
 
-  run_nuclei_scan "$BASE_DIR/nuclei/optimized_targets.txt" \
-    "$NUCLEI_TEMPLATES/http/exposed-panels/" \
-    "info,low,medium,high,critical" "$BASE_DIR/nuclei/raw/admin_panels.txt" "Admin Panels"
+  # =================================================================
+  # PHASE 3: INJECTION VULNERABILITIES (SQLi, Command Injection, XXE)
+  # =================================================================
+  progress "Phase 3: Injection Vulnerabilities (HIGH+ only)"
+  
+  run_nuclei_scan "$BASE_DIR/nuclei/scan_targets.txt" \
+    "$NUCLEI_TEMPLATES/http/vulnerabilities/generic/" \
+    "high,critical" "$BASE_DIR/nuclei/raw/03_injections.txt" "Injection Attacks" "dos,fuzz,headless"
 
-  if [[ -f "$BASE_DIR/recon_intel/takeover_candidates.txt" ]] && [[ -s "$BASE_DIR/recon_intel/takeover_candidates.txt" ]]; then
+  # =================================================================
+  # PHASE 4: RECENT CRITICAL CVEs (2024-2025)
+  # =================================================================
+  progress "Phase 4: Recent Critical CVEs (2024-2025)"
+  
+  run_nuclei_scan "$BASE_DIR/nuclei/scan_targets.txt" \
+    "$NUCLEI_TEMPLATES/http/cves/2024/,$NUCLEI_TEMPLATES/http/cves/2025/" \
+    "high,critical" "$BASE_DIR/nuclei/raw/04_recent_cves.txt" "Recent CVEs" "dos,fuzz"
+
+  # =================================================================
+  # PHASE 5: ALL CRITICAL CVEs
+  # =================================================================
+  progress "Phase 5: All Critical CVEs (Any Year)"
+  
+  run_nuclei_scan "$BASE_DIR/nuclei/scan_targets.txt" \
+    "$NUCLEI_TEMPLATES/http/cves/" \
+    "critical" "$BASE_DIR/nuclei/raw/05_all_critical_cves.txt" "All Critical CVEs" "dos,fuzz,headless,intrusive"
+
+  # =================================================================
+  # PHASE 6: SUBDOMAIN TAKEOVER (If candidates exist)
+  # =================================================================
+  if [[ -s "$BASE_DIR/recon_intel/takeover_candidates.txt" ]]; then
+    progress "Phase 6: Subdomain Takeover Detection"
     run_nuclei_scan "$BASE_DIR/recon_intel/takeover_candidates.txt" \
       "$NUCLEI_TEMPLATES/http/takeovers/,$NUCLEI_TEMPLATES/dns/" \
-      "info,low,medium,high,critical" "$BASE_DIR/nuclei/raw/subdomain_takeover.txt" "Subdomain Takeover"
+      "medium,high,critical" "$BASE_DIR/nuclei/raw/06_takeover.txt" "Subdomain Takeover" "dos"
   fi
 
-  # Phase 2: Technology Detection
-  progress "Phase 2: Technology Fingerprinting"
-  run_nuclei_scan "$BASE_DIR/nuclei/optimized_targets.txt" \
-    "$NUCLEI_TEMPLATES/http/technologies/" \
-    "info" "$BASE_DIR/nuclei/raw/tech_detection.txt" \
-    "Technology Detection" "dos,fuzz,intrusive"
-
-  # Tech-specific scans
-  if [[ -f "$BASE_DIR/nuclei/raw/tech_detection.txt" ]] && [[ -s "$BASE_DIR/nuclei/raw/tech_detection.txt" ]]; then
-    if grep -qi "wordpress" "$BASE_DIR/nuclei/raw/tech_detection.txt" 2>/dev/null; then
-      run_nuclei_scan "$BASE_DIR/nuclei/optimized_targets.txt" \
-        "$NUCLEI_TEMPLATES/http/misconfiguration/wordpress/,$NUCLEI_TEMPLATES/http/vulnerabilities/wordpress/" \
-        "medium,high,critical" "$BASE_DIR/nuclei/raw/wordpress.txt" "WordPress"
+  # =================================================================
+  # PHASE 7: TECHNOLOGY-SPECIFIC EXPLOITS (HIGH+ only)
+  # =================================================================
+  progress "Phase 7: Technology-Specific Exploits"
+  
+  if [[ -s "$BASE_DIR/http_discovery/technologies.txt" ]]; then
+    TECH_FOUND=false
+    
+    # WordPress
+    if grep -qi "wordpress" "$BASE_DIR/http_discovery/technologies.txt" 2>/dev/null; then
+      TECH_FOUND=true
+      grep -i "wordpress" "$BASE_DIR/http_discovery/live_urls.txt" 2>/dev/null > "$BASE_DIR/nuclei/wordpress_targets.txt" || touch "$BASE_DIR/nuclei/wordpress_targets.txt"
+      [[ -s "$BASE_DIR/nuclei/wordpress_targets.txt" ]] && \
+        run_nuclei_scan "$BASE_DIR/nuclei/wordpress_targets.txt" \
+          "$NUCLEI_TEMPLATES/http/vulnerabilities/wordpress/" \
+          "high,critical" "$BASE_DIR/nuclei/raw/07_wordpress.txt" "WordPress Exploits" "dos,fuzz"
     fi
 
-    if grep -qi "jenkins" "$BASE_DIR/nuclei/raw/tech_detection.txt" 2>/dev/null; then
-      run_nuclei_scan "$BASE_DIR/nuclei/optimized_targets.txt" \
-        "$NUCLEI_TEMPLATES/http/misconfiguration/jenkins/,$NUCLEI_TEMPLATES/http/vulnerabilities/jenkins/" \
-        "medium,high,critical" "$BASE_DIR/nuclei/raw/jenkins.txt" "Jenkins"
+    # Jenkins
+    if grep -qi "jenkins" "$BASE_DIR/http_discovery/technologies.txt" 2>/dev/null; then
+      TECH_FOUND=true
+      grep -i "jenkins" "$BASE_DIR/http_discovery/live_urls.txt" 2>/dev/null > "$BASE_DIR/nuclei/jenkins_targets.txt" || touch "$BASE_DIR/nuclei/jenkins_targets.txt"
+      [[ -s "$BASE_DIR/nuclei/jenkins_targets.txt" ]] && \
+        run_nuclei_scan "$BASE_DIR/nuclei/jenkins_targets.txt" \
+          "$NUCLEI_TEMPLATES/http/vulnerabilities/jenkins/" \
+          "high,critical" "$BASE_DIR/nuclei/raw/07_jenkins.txt" "Jenkins RCE" "dos,fuzz"
     fi
 
-    if grep -qi "jira" "$BASE_DIR/nuclei/raw/tech_detection.txt" 2>/dev/null; then
-      run_nuclei_scan "$BASE_DIR/nuclei/optimized_targets.txt" \
-        "$NUCLEI_TEMPLATES/http/vulnerabilities/atlassian/" \
-        "medium,high,critical" "$BASE_DIR/nuclei/raw/jira.txt" "Jira/Atlassian"
+    # Jira/Atlassian
+    if grep -qi "jira\|confluence\|atlassian" "$BASE_DIR/http_discovery/technologies.txt" 2>/dev/null; then
+      TECH_FOUND=true
+      grep -Ei "jira|confluence|atlassian" "$BASE_DIR/http_discovery/live_urls.txt" 2>/dev/null > "$BASE_DIR/nuclei/atlassian_targets.txt" || touch "$BASE_DIR/nuclei/atlassian_targets.txt"
+      [[ -s "$BASE_DIR/nuclei/atlassian_targets.txt" ]] && \
+        run_nuclei_scan "$BASE_DIR/nuclei/atlassian_targets.txt" \
+          "$NUCLEI_TEMPLATES/http/vulnerabilities/atlassian/" \
+          "high,critical" "$BASE_DIR/nuclei/raw/07_atlassian.txt" "Atlassian Exploits" "dos,fuzz"
     fi
+    
+    # Spring Boot
+    if grep -qi "spring\|java" "$BASE_DIR/http_discovery/technologies.txt" 2>/dev/null; then
+      TECH_FOUND=true
+      run_nuclei_scan "$BASE_DIR/nuclei/scan_targets.txt" \
+        "$NUCLEI_TEMPLATES/http/vulnerabilities/springboot/,$NUCLEI_TEMPLATES/http/misconfiguration/springboot/" \
+        "high,critical" "$BASE_DIR/nuclei/raw/07_springboot.txt" "Spring Boot RCE" "dos,fuzz"
+    fi
+
+    # Apache/Struts
+    if grep -qi "struts\|apache" "$BASE_DIR/http_discovery/technologies.txt" 2>/dev/null; then
+      TECH_FOUND=true
+      run_nuclei_scan "$BASE_DIR/nuclei/scan_targets.txt" \
+        "$NUCLEI_TEMPLATES/http/vulnerabilities/apache/" \
+        "high,critical" "$BASE_DIR/nuclei/raw/07_apache.txt" "Apache/Struts RCE" "dos,fuzz"
+    fi
+    
+    [[ "$TECH_FOUND" == false ]] && log "No exploitable technologies detected"
   fi
 
-  # Phase 3: Critical CVEs
-  progress "Phase 3: Critical Vulnerabilities"
-  run_nuclei_scan "$BASE_DIR/nuclei/optimized_targets.txt" \
-    "$NUCLEI_TEMPLATES/http/cves/2024/,$NUCLEI_TEMPLATES/http/cves/2023/" \
-    "high,critical" "$BASE_DIR/nuclei/raw/recent_cves.txt" "Recent CVEs (2023-2024)"
-
-  run_nuclei_scan "$BASE_DIR/nuclei/optimized_targets.txt" \
-    "$NUCLEI_TEMPLATES/http/cves/" \
-    "critical" "$BASE_DIR/nuclei/raw/critical_cves.txt" "All Critical CVEs"
-
-  run_nuclei_scan "$BASE_DIR/nuclei/optimized_targets.txt" \
-    "$NUCLEI_TEMPLATES/http/vulnerabilities/" \
-    "high,critical" "$BASE_DIR/nuclei/raw/common_vulns.txt" "Common Vulnerabilities"
-
-  # Phase 4: Misconfigurations
-  progress "Phase 4: Misconfigurations & Secrets"
-  run_nuclei_scan "$BASE_DIR/nuclei/optimized_targets.txt" \
+  # =================================================================
+  # PHASE 8: DANGEROUS MISCONFIGURATIONS (HIGH+ only)
+  # =================================================================
+  progress "Phase 8: RCE-Enabling Misconfigurations"
+  
+  run_nuclei_scan "$BASE_DIR/nuclei/scan_targets.txt" \
     "$NUCLEI_TEMPLATES/http/misconfiguration/" \
-    "low,medium,high,critical" "$BASE_DIR/nuclei/raw/misconfigs.txt" "Misconfigurations" "dos,fuzz,intrusive"
+    "high,critical" "$BASE_DIR/nuclei/raw/08_misconfigs.txt" "Dangerous Misconfigs" "dos,fuzz,headless,generic,token"
 
-  run_nuclei_scan "$BASE_DIR/nuclei/optimized_targets.txt" \
-    "$NUCLEI_TEMPLATES/http/token-spray/,$NUCLEI_TEMPLATES/http/exposures/tokens/" \
-    "medium,high,critical" "$BASE_DIR/nuclei/raw/tokens.txt" "API Keys & Tokens"
-
-  # Phase 5: Custom templates (if exist)
-  if [[ -d "$CUSTOM_NUCLEI_TEMPLATES/secrets" ]]; then
-    run_nuclei_scan "$BASE_DIR/nuclei/optimized_targets.txt" \
-      "$CUSTOM_NUCLEI_TEMPLATES/secrets/" \
-      "medium,high,critical" "$BASE_DIR/nuclei/raw/custom_secrets.txt" "Custom Secret Detection"
-  fi
-
-  # Phase 6: Conditional comprehensive scan
-  progress "Phase 6: Adaptive Scanning Strategy"
-  TARGET_COUNT=$(wc -l < "$BASE_DIR/nuclei/optimized_targets.txt" 2>/dev/null || echo 0)
+  # =================================================================
+  # PHASE 9: COMPREHENSIVE VULNERABILITY SCAN (Adaptive)
+  # =================================================================
+  progress "Phase 9: Comprehensive Scan (Adaptive Strategy)"
+  TARGET_COUNT=$(wc -l < "$BASE_DIR/nuclei/scan_targets.txt" 2>/dev/null || echo 0)
   echo -e "    ${DIM}Target count: ${YELLOW}$TARGET_COUNT${RESET}"
 
-  if [[ $TARGET_COUNT -le 50 ]]; then
-    progress "Small target set ($TARGET_COUNT) - launching deep comprehensive scan"
-    run_nuclei_scan "$BASE_DIR/nuclei/optimized_targets.txt" "$NUCLEI_TEMPLATES/" \
-      "info,low,medium,high,critical" "$BASE_DIR/nuclei/raw/comprehensive.txt" \
-      "Comprehensive Deep Scan" "dos,fuzz,intrusive,headless"
-  elif [[ $TARGET_COUNT -le 200 ]]; then
-    progress "Medium target set ($TARGET_COUNT) - launching focused scan"
-    run_nuclei_scan "$BASE_DIR/nuclei/optimized_targets.txt" "$NUCLEI_TEMPLATES/http/" \
-      "low,medium,high,critical" "$BASE_DIR/nuclei/raw/focused.txt" \
-      "Focused HTTP Scan" "dos,fuzz,intrusive"
+  if [[ $TARGET_COUNT -le 150 ]]; then
+    progress "Small scope ($TARGET_COUNT targets) - MEDIUM+ full scan"
+    run_nuclei_scan "$BASE_DIR/nuclei/scan_targets.txt" \
+      "$NUCLEI_TEMPLATES/http/vulnerabilities/" \
+      "medium,high,critical" "$BASE_DIR/nuclei/raw/09_comprehensive.txt" \
+      "All Vulnerabilities (MEDIUM+)" "dos,fuzz,intrusive,headless"
+  elif [[ $TARGET_COUNT -le 500 ]]; then
+    progress "Medium scope ($TARGET_COUNT targets) - HIGH+ focused"
+    run_nuclei_scan "$BASE_DIR/nuclei/scan_targets.txt" \
+      "$NUCLEI_TEMPLATES/http/vulnerabilities/" \
+      "high,critical" "$BASE_DIR/nuclei/raw/09_comprehensive.txt" \
+      "High-Impact Vulnerabilities" "dos,fuzz,intrusive,headless"
   else
-    progress "Large target set ($TARGET_COUNT) - quick critical-only scan"
-    run_nuclei_scan "$BASE_DIR/nuclei/optimized_targets.txt" "$NUCLEI_TEMPLATES/http/" \
-      "high,critical" "$BASE_DIR/nuclei/raw/quick_critical.txt" \
-      "Quick Critical Scan" "dos,fuzz,intrusive,headless"
+    progress "Large scope ($TARGET_COUNT targets) - CRITICAL only"
+    run_nuclei_scan "$BASE_DIR/nuclei/scan_targets.txt" \
+      "$NUCLEI_TEMPLATES/http/vulnerabilities/" \
+      "critical" "$BASE_DIR/nuclei/raw/09_comprehensive.txt" \
+      "Critical Vulnerabilities" "dos,fuzz,intrusive,headless"
   fi
 
-  # Aggregate results
-  progress "Aggregating results..."
-  cat "$BASE_DIR/nuclei/raw/"*.txt 2>/dev/null | sort -u > "$BASE_DIR/nuclei/processed/all_findings.txt" || touch "$BASE_DIR/nuclei/processed/all_findings.txt"
-  grep -Ei '\[critical\]' "$BASE_DIR/nuclei/raw/"*.txt 2>/dev/null | sort -u > "$BASE_DIR/nuclei/processed/CRITICAL.txt" || touch "$BASE_DIR/nuclei/processed/CRITICAL.txt"
-  grep -Ei '\[high\]' "$BASE_DIR/nuclei/raw/"*.txt 2>/dev/null | sort -u > "$BASE_DIR/nuclei/processed/HIGH.txt" || touch "$BASE_DIR/nuclei/processed/HIGH.txt"
-  grep -Ei '\[medium\]' "$BASE_DIR/nuclei/raw/"*.txt 2>/dev/null | sort -u > "$BASE_DIR/nuclei/processed/MEDIUM.txt" || touch "$BASE_DIR/nuclei/processed/MEDIUM.txt"
+  # =================================================================
+  # PHASE 10: CUSTOM TEMPLATES
+  # =================================================================
+  if [[ -d "$CUSTOM_NUCLEI_TEMPLATES" ]] && [[ -n "$(ls -A "$CUSTOM_NUCLEI_TEMPLATES" 2>/dev/null)" ]]; then
+    progress "Phase 10: Custom Templates"
+    run_nuclei_scan "$BASE_DIR/nuclei/scan_targets.txt" \
+      "$CUSTOM_NUCLEI_TEMPLATES/" \
+      "medium,high,critical" "$BASE_DIR/nuclei/raw/10_custom.txt" "Custom Exploits" "dos"
+  fi
 
-  jq -s 'add' "$BASE_DIR/nuclei/json/"*.json 2>/dev/null > "$BASE_DIR/nuclei/processed/all_findings.json" || echo "[]" > "$BASE_DIR/nuclei/processed/all_findings.json"
+  # =================================================================
+  # AGGRESSIVE NOISE FILTERING
+  # =================================================================
+  progress "Filtering results (AGGRESSIVE - removing ALL noise)..."
+  
+  cat "$BASE_DIR/nuclei/raw/"*.txt 2>/dev/null | sort -u > "$BASE_DIR/nuclei/processed/all_findings_raw.txt" || touch "$BASE_DIR/nuclei/processed/all_findings_raw.txt"
+  
+  # Remove info, low, unknown AND common false positives
+  grep -Ev '\[info\]|\[low\]|\[unknown\]' "$BASE_DIR/nuclei/processed/all_findings_raw.txt" 2>/dev/null | \
+    grep -Ev 'dns-saas|tech-detect|waf-detect|fingerprint|ssl-|tls-|http-trace|options-method|
+missing-security-headers|x-frame-options|x-content-type|content-security-policy|strict-transport|
+permissions-policy|referrer-policy|x-permitted|x-xss-protection|
+weak-cipher|deprecated-tls|self-signed|untrusted-root|
+robots-txt|sitemap|security\.txt|humans\.txt|ads\.txt|
+cookie-without-secure|cookie-without-httponly|
+verbose-|exposed-panel|login-page|signup-page|
+error-based|version-detect|default-page|generic-detect|
+detect-|discovery-|service-detect|application-detect' 2>/dev/null | \
+    sort -u > "$BASE_DIR/nuclei/processed/all_findings.txt" || touch "$BASE_DIR/nuclei/processed/all_findings.txt"
+  
+  # Categorize by severity
+  grep -Ei '\[critical\]' "$BASE_DIR/nuclei/processed/all_findings.txt" 2>/dev/null | sort -u > "$BASE_DIR/nuclei/processed/CRITICAL.txt" || touch "$BASE_DIR/nuclei/processed/CRITICAL.txt"
+  grep -Ei '\[high\]' "$BASE_DIR/nuclei/processed/all_findings.txt" 2>/dev/null | sort -u > "$BASE_DIR/nuclei/processed/HIGH.txt" || touch "$BASE_DIR/nuclei/processed/HIGH.txt"
+  grep -Ei '\[medium\]' "$BASE_DIR/nuclei/processed/all_findings.txt" 2>/dev/null | sort -u > "$BASE_DIR/nuclei/processed/MEDIUM.txt" || touch "$BASE_DIR/nuclei/processed/MEDIUM.txt"
+
+  # Filter JSON (remove info/low/unknown)
+  if ls "$BASE_DIR/nuclei/json/"*.json 1> /dev/null 2>&1; then
+    jq -s 'add | map(select(.info.severity != "info" and .info.severity != "low" and .info.severity != "unknown"))' \
+      "$BASE_DIR/nuclei/json/"*.json 2>/dev/null > "$BASE_DIR/nuclei/processed/all_findings.json" || echo "[]" > "$BASE_DIR/nuclei/processed/all_findings.json"
+  else
+    echo "[]" > "$BASE_DIR/nuclei/processed/all_findings.json"
+  fi
 
   # Generate summary
   CRIT=$(wc -l < "$BASE_DIR/nuclei/processed/CRITICAL.txt" 2>/dev/null || echo 0)
@@ -640,34 +856,74 @@ if should_run nuclei; then
 
   {
     echo "================================================================="
-    echo "NUCLEI SCAN SUMMARY - $(date)"
+    echo "AGGRESSIVE NUCLEI SCAN SUMMARY - $(date)"
     echo "================================================================="
-    echo "Critical: $CRIT | High: $HIGH | Medium: $MED | Total: $ALL"
     echo ""
+    echo "EXPLOITABLE VULNERABILITIES FOUND:"
+    echo "  🔴 Critical:  $CRIT"
+    echo "  🟠 High:      $HIGH"
+    echo "  🟡 Medium:    $MED"
+    echo "  ━━━━━━━━━━━━━━━━━━━"
+    echo "  ✅ Total:     $ALL"
+    echo ""
+    echo "FILTERING APPLIED:"
+    echo "  ✗ Removed: info, low, unknown severity"
+    echo "  ✗ Removed: fingerprinting, tech detection"
+    echo "  ✗ Removed: SSL/TLS info, missing headers"
+    echo "  ✗ Removed: generic detections, exposed panels"
+    echo ""
+    echo "================================================================="
+    
     if [[ $CRIT -gt 0 ]]; then
-      echo "CRITICAL FINDINGS:"
-      head -30 "$BASE_DIR/nuclei/processed/CRITICAL.txt"
+      echo ""
+      echo "🔴 CRITICAL FINDINGS (IMMEDIATE ACTION REQUIRED):"
+      echo "================================================================="
+      head -50 "$BASE_DIR/nuclei/processed/CRITICAL.txt"
+      [[ $CRIT -gt 50 ]] && echo "... and $((CRIT - 50)) more (see nuclei/processed/CRITICAL.txt)"
     fi
+    
     if [[ $HIGH -gt 0 ]]; then
       echo ""
-      echo "HIGH FINDINGS:"
-      head -20 "$BASE_DIR/nuclei/processed/HIGH.txt"
+      echo "🟠 HIGH SEVERITY FINDINGS:"
+      echo "================================================================="
+      head -30 "$BASE_DIR/nuclei/processed/HIGH.txt"
+      [[ $HIGH -gt 30 ]] && echo "... and $((HIGH - 30)) more (see nuclei/processed/HIGH.txt)"
+    fi
+    
+    if [[ $MED -gt 0 ]]; then
+      echo ""
+      echo "🟡 MEDIUM SEVERITY FINDINGS:"
+      echo "================================================================="
+      head -20 "$BASE_DIR/nuclei/processed/MEDIUM.txt"
+      [[ $MED -gt 20 ]] && echo "... and $((MED - 20)) more (see nuclei/processed/MEDIUM.txt)"
+    fi
+    
+    if [[ $ALL -eq 0 ]]; then
+      echo ""
+      echo "✅ NO EXPLOITABLE VULNERABILITIES DETECTED"
+      echo "   (All info/low findings filtered out)"
     fi
   } > "$BASE_DIR/nuclei/SCAN_SUMMARY.txt"
 
+  # Display results
+  echo ""
   if [[ $CRIT -gt 0 ]]; then
-    warn "⚠️  Critical: ${RED}$CRIT${RESET}"
+    warn "🔴 CRITICAL: ${RED}${BOLD}$CRIT${RESET} exploitable vulnerabilities"
   fi
   if [[ $HIGH -gt 0 ]]; then
-    warn "⚠️  High: ${YELLOW}$HIGH${RESET}"
+    warn "🟠 HIGH: ${YELLOW}${BOLD}$HIGH${RESET} high-severity issues"
+  fi
+  if [[ $MED -gt 0 ]]; then
+    log "🟡 MEDIUM: ${CYAN}$MED${RESET} medium-severity issues"
   fi
   if [[ $ALL -gt 0 ]]; then
-    success "✓ Total findings: ${GREEN}$ALL${RESET}"
+    success "✓ Total EXPLOITABLE findings: ${GREEN}${BOLD}$ALL${RESET} (info/low filtered)"
   else
-    log "No vulnerabilities detected"
+    success "✓ No exploitable vulnerabilities detected (info/low filtered)"
   fi
 
   cp "$BASE_DIR/nuclei/processed/CRITICAL.txt" "$BASE_DIR/nuclei/CRITICAL_FINDINGS.txt" 2>/dev/null || true
+  cp "$BASE_DIR/nuclei/processed/HIGH.txt" "$BASE_DIR/nuclei/HIGH_FINDINGS.txt" 2>/dev/null || true
 fi
 
 ########################################
@@ -675,7 +931,7 @@ fi
 ########################################
 echo ""
 echo -e "${CYAN}╔════════════════════════════════════════════════════════════════╗${RESET}"
-echo -e "${CYAN}║${RESET}               ${BOLD}${GREEN}RECONNAISSANCE COMPLETE${RESET}                      ${CYAN}║${RESET}"
+echo -e "${CYAN}║${RESET}          ${BOLD}${GREEN}AGGRESSIVE RECONNAISSANCE COMPLETE${RESET}             ${CYAN}║${RESET}"
 echo -e "${CYAN}╠════════════════════════════════════════════════════════════════╣${RESET}"
 echo -e "${CYAN}║${RESET}  Target: ${YELLOW}${BOLD}$(printf '%-50s' "$domain")${RESET} ${CYAN}║${RESET}"
 echo -e "${CYAN}╠════════════════════════════════════════════════════════════════╣${RESET}"
@@ -683,105 +939,96 @@ echo -e "${CYAN}║${RESET}  ${BOLD}Discovery Statistics${RESET}                
 echo -e "${CYAN}║${RESET}  ├─ Domains Found:      ${GREEN}$(printf '%6s' "$(wc -l < "$BASE_DIR/dns/resolved_domains.txt" 2>/dev/null || echo 0)")${RESET}                         ${CYAN}║${RESET}"
 echo -e "${CYAN}║${RESET}  ├─ Live HTTP:          ${GREEN}$(printf '%6s' "$(wc -l < "$BASE_DIR/http_discovery/live_urls.txt" 2>/dev/null || echo 0)")${RESET}                         ${CYAN}║${RESET}"
 echo -e "${CYAN}║${RESET}  ├─ Status 200:         ${GREEN}$(printf '%6s' "$(wc -l < "$BASE_DIR/http_discovery/status_200.txt" 2>/dev/null || echo 0)")${RESET}                         ${CYAN}║${RESET}"
-echo -e "${CYAN}║${RESET}  ├─ Status 403:         ${YELLOW}$(printf '%6s' "$(wc -l < "$BASE_DIR/http_discovery/status_403.txt" 2>/dev/null || echo 0)")${RESET}                         ${CYAN}║${RESET}"
-echo -e "${CYAN}║${RESET}  └─ High-Value Targets: ${YELLOW}$(printf '%6s' "$(wc -l < "$BASE_DIR/http_exploitation/high_value_urls.txt" 2>/dev/null || echo 0)")${RESET}                         ${CYAN}║${RESET}"
+echo -e "${CYAN}║${RESET}  ├─ Status 401:         ${YELLOW}$(printf '%6s' "$(wc -l < "$BASE_DIR/http_discovery/status_401.txt" 2>/dev/null || echo 0)")${RESET}                         ${CYAN}║${RESET}"
+echo -e "${CYAN}║${RESET}  └─ Status 403:         ${YELLOW}$(printf '%6s' "$(wc -l < "$BASE_DIR/http_discovery/status_403.txt" 2>/dev/null || echo 0)")${RESET}                         ${CYAN}║${RESET}"
 echo -e "${CYAN}║${RESET}                                                                ${CYAN}║${RESET}"
 echo -e "${CYAN}║${RESET}  ${BOLD}Security Intelligence${RESET}                                   ${CYAN}║${RESET}"
 echo -e "${CYAN}║${RESET}  ├─ Cloud Assets:       ${CYAN}$(printf '%6s' "$(wc -l < "$BASE_DIR/recon_intel/cloud_assets.txt" 2>/dev/null || echo 0)")${RESET}                         ${CYAN}║${RESET}"
+echo -e "${CYAN}║${RESET}  ├─ AWS:                ${GREEN}$(printf '%6s' "$(wc -l < "$BASE_DIR/recon_intel/aws_assets.txt" 2>/dev/null || echo 0)")${RESET}                         ${CYAN}║${RESET}"
+echo -e "${CYAN}║${RESET}  ├─ Azure:              ${GREEN}$(printf '%6s' "$(wc -l < "$BASE_DIR/recon_intel/azure_assets.txt" 2>/dev/null || echo 0)")${RESET}                         ${CYAN}║${RESET}"
+echo -e "${CYAN}║${RESET}  ├─ GCP:                ${GREEN}$(printf '%6s' "$(wc -l < "$BASE_DIR/recon_intel/gcp_assets.txt" 2>/dev/null || echo 0)")${RESET}                         ${CYAN}║${RESET}"
 echo -e "${CYAN}║${RESET}  ├─ Takeover Risks:     ${YELLOW}$(printf '%6s' "$(wc -l < "$BASE_DIR/recon_intel/takeover_candidates.txt" 2>/dev/null || echo 0)")${RESET}                         ${CYAN}║${RESET}"
-echo -e "${CYAN}║${RESET}  └─ Critical Findings:  ${RED}$(printf '%6s' "$(wc -l < "$BASE_DIR/nuclei/CRITICAL_FINDINGS.txt" 2>/dev/null || echo 0)")${RESET}                         ${CYAN}║${RESET}"
+echo -e "${CYAN}║${RESET}  ├─ Critical Findings:  ${RED}$(printf '%6s' "$(wc -l < "$BASE_DIR/nuclei/CRITICAL_FINDINGS.txt" 2>/dev/null || echo 0)")${RESET}                         ${CYAN}║${RESET}"
+echo -e "${CYAN}║${RESET}  └─ High Findings:      ${YELLOW}$(printf '%6s' "$(wc -l < "$BASE_DIR/nuclei/HIGH_FINDINGS.txt" 2>/dev/null || echo 0)")${RESET}                         ${CYAN}║${RESET}"
 echo -e "${CYAN}╠════════════════════════════════════════════════════════════════╣${RESET}"
 echo -e "${CYAN}║${RESET}  ${BOLD}Output Location${RESET}                                         ${CYAN}║${RESET}"
 echo -e "${CYAN}║${RESET}  ${DIM}$(printf '%-60s' "$BASE_DIR")${RESET}  ${CYAN}║${RESET}"
 echo -e "${CYAN}╚════════════════════════════════════════════════════════════════╝${RESET}"
 
-# Generate detailed report
+# Generate report
 {
   echo "╔════════════════════════════════════════════════════════════════╗"
-  echo "║          RECONNAISSANCE REPORT - $domain"
-  echo "║          Generated: $(date '+%F %T')"
+  echo "║   AGGRESSIVE RECONNAISSANCE REPORT - $domain"
+  echo "║   Generated: $(date '+%F %T')"
+  echo "║   Mode: MEDIUM+ EXPLOITABLE VULNERABILITIES ONLY"
   echo "╚════════════════════════════════════════════════════════════════╝"
   echo ""
   echo "═══ DISCOVERY STATISTICS ═══"
   echo ""
   echo "Enumeration Results:"
-  echo "  • Total Domains Discovered:    $(wc -l < "$BASE_DIR/dns/resolved_domains.txt" 2>/dev/null || echo 0)"
-  echo "  • Live HTTP Services:          $(wc -l < "$BASE_DIR/http_discovery/live_urls.txt" 2>/dev/null || echo 0)"
-  echo "  • Unique Technologies:         $(wc -l < "$BASE_DIR/http_discovery/technologies.txt" 2>/dev/null || echo 0)"
+  echo "  • Total Domains:     $(wc -l < "$BASE_DIR/dns/resolved_domains.txt" 2>/dev/null || echo 0)"
+  echo "  • Live HTTP:         $(wc -l < "$BASE_DIR/http_discovery/live_urls.txt" 2>/dev/null || echo 0)"
+  echo "  • Technologies:      $(wc -l < "$BASE_DIR/http_discovery/technologies.txt" 2>/dev/null || echo 0)"
   echo ""
-  echo "HTTP Status Breakdown:"
-  echo "  • 200 OK:                      $(wc -l < "$BASE_DIR/http_discovery/status_200.txt" 2>/dev/null || echo 0)"
-  echo "  • 401 Unauthorized:            $(wc -l < "$BASE_DIR/http_discovery/status_401.txt" 2>/dev/null || echo 0)"
-  echo "  • 403 Forbidden:               $(wc -l < "$BASE_DIR/http_discovery/status_403.txt" 2>/dev/null || echo 0)"
-  echo "  • 404 Not Found:               $(wc -l < "$BASE_DIR/http_discovery/status_404.txt" 2>/dev/null || echo 0)"
-  echo "  • 5xx Server Errors:           $(wc -l < "$BASE_DIR/http_discovery/status_5xx.txt" 2>/dev/null || echo 0)"
+  echo "HTTP Status:"
+  echo "  • 200 OK:            $(wc -l < "$BASE_DIR/http_discovery/status_200.txt" 2>/dev/null || echo 0)"
+  echo "  • 401 Unauthorized:  $(wc -l < "$BASE_DIR/http_discovery/status_401.txt" 2>/dev/null || echo 0)"
+  echo "  • 403 Forbidden:     $(wc -l < "$BASE_DIR/http_discovery/status_403.txt" 2>/dev/null || echo 0)"
+  echo "  • 5xx Errors:        $(wc -l < "$BASE_DIR/http_discovery/status_5xx.txt" 2>/dev/null || echo 0)"
   echo ""
-  echo "═══ HIGH-VALUE TARGETS ═══"
-  echo ""
-  HV_COUNT=$(wc -l < "$BASE_DIR/http_exploitation/high_value_urls.txt" 2>/dev/null || echo 0)
-  if [[ $HV_COUNT -gt 0 ]]; then
-    echo "Admin/API/Auth Endpoints ($HV_COUNT total):"
-    head -15 "$BASE_DIR/http_exploitation/high_value_urls.txt" 2>/dev/null | sed 's/^/  • /' || echo "  None"
-    [[ $HV_COUNT -gt 15 ]] && echo "  ... and $((HV_COUNT - 15)) more"
-  else
-    echo "No high-value targets identified"
-  fi
-  echo ""
-  echo "═══ SECURITY FINDINGS ═══"
+  echo "═══ EXPLOITABLE VULNERABILITIES (MEDIUM+) ═══"
   echo ""
   CRIT_COUNT=$(wc -l < "$BASE_DIR/nuclei/CRITICAL_FINDINGS.txt" 2>/dev/null || echo 0)
-  echo "Critical/High Severity Issues: $CRIT_COUNT"
+  HIGH_COUNT=$(wc -l < "$BASE_DIR/nuclei/HIGH_FINDINGS.txt" 2>/dev/null || echo 0)
+  MED_COUNT=$(wc -l < "$BASE_DIR/nuclei/processed/MEDIUM.txt" 2>/dev/null || echo 0)
+  echo "🔴 Critical: $CRIT_COUNT"
+  echo "🟠 High:     $HIGH_COUNT"
+  echo "🟡 Medium:   $MED_COUNT"
   echo ""
   if [[ $CRIT_COUNT -gt 0 ]]; then
-    echo "Top Findings:"
-    head -25 "$BASE_DIR/nuclei/CRITICAL_FINDINGS.txt" 2>/dev/null | sed 's/^/  • /' || echo "  None"
-    [[ $CRIT_COUNT -gt 25 ]] && echo "  ... and $((CRIT_COUNT - 25)) more (see nuclei/CRITICAL_FINDINGS.txt)"
+    echo "Critical Findings:"
+    head -30 "$BASE_DIR/nuclei/CRITICAL_FINDINGS.txt" 2>/dev/null | sed 's/^/  • /'
+    [[ $CRIT_COUNT -gt 30 ]] && echo "  ... and $((CRIT_COUNT - 30)) more"
+  fi
+  echo ""
+  if [[ $HIGH_COUNT -gt 0 ]]; then
+    echo "High Severity Findings:"
+    head -20 "$BASE_DIR/nuclei/HIGH_FINDINGS.txt" 2>/dev/null | sed 's/^/  • /'
+    [[ $HIGH_COUNT -gt 20 ]] && echo "  ... and $((HIGH_COUNT - 20)) more"
   fi
   echo ""
   echo "═══ CLOUD INFRASTRUCTURE ═══"
   echo ""
   CLOUD_COUNT=$(wc -l < "$BASE_DIR/recon_intel/cloud_assets.txt" 2>/dev/null || echo 0)
-  echo "Cloud-Hosted Assets: $CLOUD_COUNT"
-  if [[ $CLOUD_COUNT -gt 0 ]]; then
-    echo ""
-    head -10 "$BASE_DIR/recon_intel/cloud_assets.txt" 2>/dev/null | sed 's/^/  • /' || echo "  None"
-    [[ $CLOUD_COUNT -gt 10 ]] && echo "  ... and $((CLOUD_COUNT - 10)) more"
-  fi
+  AWS_COUNT=$(wc -l < "$BASE_DIR/recon_intel/aws_assets.txt" 2>/dev/null || echo 0)
+  AZURE_COUNT=$(wc -l < "$BASE_DIR/recon_intel/azure_assets.txt" 2>/dev/null || echo 0)
+  GCP_COUNT=$(wc -l < "$BASE_DIR/recon_intel/gcp_assets.txt" 2>/dev/null || echo 0)
+  echo "Cloud Assets: $CLOUD_COUNT"
+  echo "  ├─ AWS:    $AWS_COUNT"
+  echo "  ├─ Azure:  $AZURE_COUNT"
+  echo "  └─ GCP:    $GCP_COUNT"
   echo ""
   TAKEOVER_COUNT=$(wc -l < "$BASE_DIR/recon_intel/takeover_candidates.txt" 2>/dev/null || echo 0)
-  echo "Potential Subdomain Takeover Candidates: $TAKEOVER_COUNT"
+  echo "Subdomain Takeover Candidates: $TAKEOVER_COUNT"
   if [[ $TAKEOVER_COUNT -gt 0 ]]; then
     echo ""
-    echo "⚠️  PRIORITY: Review these for subdomain takeover vulnerabilities"
-    head -15 "$BASE_DIR/recon_intel/takeover_candidates.txt" 2>/dev/null | sed 's/^/  • /' || echo "  None"
-    [[ $TAKEOVER_COUNT -gt 15 ]] && echo "  ... and $((TAKEOVER_COUNT - 15)) more"
-  fi
-  echo ""
-  echo "═══ DETECTED TECHNOLOGIES ═══"
-  echo ""
-  TECH_COUNT=$(wc -l < "$BASE_DIR/http_discovery/technologies.txt" 2>/dev/null || echo 0)
-  if [[ $TECH_COUNT -gt 0 ]]; then
-    head -25 "$BASE_DIR/http_discovery/technologies.txt" 2>/dev/null | sed 's/^/  • /' || echo "  None"
-    [[ $TECH_COUNT -gt 25 ]] && echo "  ... and $((TECH_COUNT - 25)) more"
-  else
-    echo "No technologies detected"
+    head -15 "$BASE_DIR/recon_intel/takeover_candidates.txt" 2>/dev/null | sed 's/^/  • /'
   fi
   echo ""
   echo "═══ FILE LOCATIONS ═══"
   echo ""
-  echo "Results Directory:     $BASE_DIR"
-  echo "Logs:                  $BASE_DIR/logs/recon.log"
-  echo "Live URLs:             $BASE_DIR/http_discovery/live_urls.txt"
-  echo "Critical Findings:     $BASE_DIR/nuclei/CRITICAL_FINDINGS.txt"
-  echo "Takeover Candidates:   $BASE_DIR/recon_intel/takeover_candidates.txt"
+  echo "Results:           $BASE_DIR"
+  echo "Critical Findings: $BASE_DIR/nuclei/CRITICAL_FINDINGS.txt"
+  echo "High Findings:     $BASE_DIR/nuclei/HIGH_FINDINGS.txt"
+  echo "Scan Summary:      $BASE_DIR/nuclei/SCAN_SUMMARY.txt"
   echo ""
   echo "╔════════════════════════════════════════════════════════════════╗"
-  echo "║  End of Report - $(date '+%F %T')"
+  echo "║  Report Complete - $(date '+%F %T')"
   echo "╚════════════════════════════════════════════════════════════════╝"
 } > "$BASE_DIR/FINAL_REPORT.txt"
 
 echo ""
-success "Final report saved: ${CYAN}$BASE_DIR/FINAL_REPORT.txt${RESET}"
+success "Final report: ${CYAN}$BASE_DIR/FINAL_REPORT.txt${RESET}"
 echo ""
 
 if [[ "$VERBOSE" == true ]]; then
