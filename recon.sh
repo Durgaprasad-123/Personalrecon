@@ -80,7 +80,7 @@ trap 'exit 130' INT TERM
 ########################################
 show_help() {
   echo -e "${BOLD}${CYAN}════════════════════════════════════════════════════════════╗${RESET}"
-  echo -e "${BOLD}  Automated Reconnaissance Script (AGGRESSIVE)${RESET}"
+  echo -e "${BOLD}  Automated Reconnaissance Script (COMPREHENSIVE)${RESET}"
   echo -e "${CYAN}════════════════════════════════════════════════════════════╝${RESET}"
   echo ""
   echo -e "${BOLD}Usage:${RESET}"
@@ -99,7 +99,7 @@ show_help() {
   echo -e "  ${CYAN}dns${RESET}                DNS resolution and validation"
   echo -e "  ${CYAN}recon_intel${RESET}        Cloud assets and takeover detection"
   echo -e "  ${CYAN}http_discovery${RESET}     HTTP probing and tech detection"
-  echo -e "  ${CYAN}nuclei${RESET}             AGGRESSIVE vulnerability scanning (MEDIUM+ only)"
+  echo -e "  ${CYAN}nuclei${RESET}             Comprehensive vulnerability scanning (all severities)"
   echo ""
   echo -e "${BOLD}Examples:${RESET}"
   echo -e "  $(basename "$0") ${GREEN}example.com${RESET}"
@@ -187,11 +187,13 @@ should_run() {
 ########################################
 HTTP_THREADS=50
 HTTP_RATE=120
+MAX_HISTORICAL_ENDPOINTS=25000
 
 # Nuclei will be configured dynamically based on target count
 NUCLEI_BASE_CONCURRENCY=50
 NUCLEI_BASE_RATE=300
 NUCLEI_TIMEOUT=15
+NUCLEI_RETRIES=2
 NUCLEI_MAX_HOST_ERROR=30
 
 RESOLVERS="$HOME/resolvers.txt"
@@ -216,12 +218,12 @@ fi
 ########################################
 clear
 echo -e "${CYAN}╔════════════════════════════════════════════════════════════╗${RESET}"
-echo -e "${CYAN}║${RESET}     ${BOLD}${GREEN}AGGRESSIVE RECONNAISSANCE FRAMEWORK (MEDIUM+ ONLY)${RESET}     ${CYAN}║${RESET}"
+echo -e "${CYAN}║${RESET}   ${BOLD}${GREEN}COMPREHENSIVE RECONNAISSANCE FRAMEWORK (ALL SEVERITIES)${RESET}   ${CYAN}║${RESET}"
 echo -e "${CYAN}╠════════════════════════════════════════════════════════════╣${RESET}"
 echo -e "${CYAN}║${RESET}  Target: ${YELLOW}${BOLD}$(printf '%-50s' "$domain")${RESET} ${CYAN}║${RESET}"
 echo -e "${CYAN}║${RESET}  Output: ${DIM}$(printf '%-50s' "$BASE_DIR")${RESET} ${CYAN}║${RESET}"
 echo -e "${CYAN}║${RESET}  BY:     ${BOLD}${GREEN}PRASAD${RESET}                                          ${CYAN}║${RESET}"
-echo -e "${CYAN}║${RESET}  Mode:   ${BOLD}${RED}HIGH-VALUE EXPLOITS ONLY${RESET}                        ${CYAN}║${RESET}"
+echo -e "${CYAN}║${RESET}  Mode:   ${BOLD}${RED}LOW,MEDIUM,HIGH,CRITICAL,UNKNOWN${RESET}               ${CYAN}║${RESET}"
 echo -e "${CYAN}║${RESET}  Start:  ${GREEN}$(printf '%-50s' "$START_STAGE")${RESET} ${CYAN}║${RESET}"
 echo -e "${CYAN}╚════════════════════════════════════════════════════════════╝${RESET}"
 echo ""
@@ -231,10 +233,18 @@ echo ""
 ########################################
 log "Checking required tools..."
 MISSING_TOOLS=()
+OPTIONAL_TOOLS=()
+has_tool() { command -v "$1" >/dev/null 2>&1; }
 
 for t in subfinder assetfinder amass puredns dnsgen httpx nuclei jq; do
-  if ! command -v "$t" >/dev/null 2>&1; then
+  if ! has_tool "$t"; then
     MISSING_TOOLS+=("$t")
+  fi
+done
+
+for t in gau katana; do
+  if has_tool "$t"; then
+    OPTIONAL_TOOLS+=("$t")
   fi
 done
 
@@ -244,6 +254,7 @@ if [[ ${#MISSING_TOOLS[@]} -gt 0 ]]; then
 fi
 
 success "All required tools are installed"
+[[ ${#OPTIONAL_TOOLS[@]} -gt 0 ]] && log "Optional URL enrichment tools available: ${OPTIONAL_TOOLS[*]}"
 
 ########################################
 # PASSIVE
@@ -535,19 +546,47 @@ if should_run http_discovery; then
     jq -r '.tech[]?' "$HTTPX_JSON" 2>/dev/null | sort -u \
       > "$BASE_DIR/http_discovery/technologies.txt" || touch "$BASE_DIR/http_discovery/technologies.txt"
 
+    progress "Collecting endpoint candidates for deeper vuln coverage..."
+    {
+      if has_tool gau; then
+        gau --threads 5 --subs "$domain" 2>/dev/null || true
+      fi
+
+      if has_tool katana; then
+        katana -list "$BASE_DIR/http_discovery/live_urls.txt"           -silent -jc -d 2 -rl 20 -c 15 2>/dev/null || true
+      fi
+    } | sed 's/#.*$//' | sed 's/[[:space:]]\+$//' | grep -E '^https?://' | sort -u       > "$BASE_DIR/http_discovery/endpoint_candidates_raw.txt" || touch "$BASE_DIR/http_discovery/endpoint_candidates_raw.txt"
+
+    if [[ -s "$BASE_DIR/http_discovery/endpoint_candidates_raw.txt" ]]; then
+      awk 'length($0) < 240' "$BASE_DIR/http_discovery/endpoint_candidates_raw.txt" | head -n "$MAX_HISTORICAL_ENDPOINTS"         > "$BASE_DIR/http_discovery/endpoint_candidates.txt" || touch "$BASE_DIR/http_discovery/endpoint_candidates.txt"
+    else
+      touch "$BASE_DIR/http_discovery/endpoint_candidates.txt"
+    fi
+
+    # Do not over-limit URL coverage: feed ALL discovered endpoints to nuclei.
+    sort -u "$BASE_DIR/http_discovery/endpoint_candidates.txt" > "$BASE_DIR/http_discovery/high_risk_endpoints.txt" || touch "$BASE_DIR/http_discovery/high_risk_endpoints.txt"
+
+    # Keep a prioritized subset for operator visibility only (not used as a hard filter).
+    grep -E '/(api|v[0-9]+|admin|debug|internal|private|graphql|swagger|openapi|actuator|\.env|backup|config|\.git|phpinfo|jenkins|prometheus|metrics|health|token|auth|oauth|callback|webhook|upload|download|export)' \
+      "$BASE_DIR/http_discovery/endpoint_candidates.txt" 2>/dev/null | sort -u \
+      > "$BASE_DIR/http_discovery/prioritized_endpoints.txt" || touch "$BASE_DIR/http_discovery/prioritized_endpoints.txt"
+
     success "Live HTTP services: ${BOLD}${GREEN}$(wc -l < "$BASE_DIR/http_discovery/live_urls.txt" || echo 0)${RESET}"
     echo -e "    ${DIM}200 OK: ${GREEN}$(wc -l < "$BASE_DIR/http_discovery/status_200.txt" 2>/dev/null || echo 0)${RESET} ${DIM}| 401: ${YELLOW}$(wc -l < "$BASE_DIR/http_discovery/status_401.txt" 2>/dev/null || echo 0)${RESET} ${DIM}| 403: ${YELLOW}$(wc -l < "$BASE_DIR/http_discovery/status_403.txt" 2>/dev/null || echo 0)${RESET}${RESET}"
+    echo -e "    ${DIM}Endpoint candidates: ${CYAN}$(wc -l < "$BASE_DIR/http_discovery/endpoint_candidates.txt" 2>/dev/null || echo 0)${RESET} ${DIM}| High-risk: ${YELLOW}$(wc -l < "$BASE_DIR/http_discovery/high_risk_endpoints.txt" 2>/dev/null || echo 0)${RESET}"
   else
     warn "No httpx output generated"
     touch "$BASE_DIR/http_discovery/live_urls.txt"
+    touch "$BASE_DIR/http_discovery/endpoint_candidates.txt"
+    touch "$BASE_DIR/http_discovery/high_risk_endpoints.txt"
   fi
 fi
 
 ########################################
-# NUCLEI SCAN (AGGRESSIVE - MEDIUM+ ONLY)
+# NUCLEI SCAN (COMPREHENSIVE - ALL SEVERITIES)
 ########################################
 if should_run nuclei; then
-  stage_header "7/7" "AGGRESSIVE VULNERABILITY SCANNING (MEDIUM+ ONLY)"
+  stage_header "7/7" "COMPREHENSIVE VULNERABILITY SCANNING (ALL SEVERITIES)"
 
   run_nuclei_scan() {
     local target_file="$1"
@@ -555,7 +594,7 @@ if should_run nuclei; then
     local severity="$3"
     local output_file="$4"
     local description="$5"
-    local exclude_tags="${6:-dos,fuzz,intrusive,headless,generic,token}"
+    local exclude_tags="${6:-dos,fuzz,token}"
     mkdir -p "$(dirname "$output_file")"
 
     if [[ ! -f "$target_file" ]] || [[ ! -s "$target_file" ]]; then
@@ -565,46 +604,45 @@ if should_run nuclei; then
 
     local count
     count=$(wc -l < "$target_file")
-    
-    # INTELLIGENT CONCURRENCY CALCULATION
-    # Rule: concurrency must be <= max-host-error to avoid warnings
-    # Also scale down for small target sets
-    local concurrency
-    local max_host_error
-    local rate_limit
-    
+
+    # VPS-aware adaptive tuning
+    local cores mem_gb
+    cores=$(nproc 2>/dev/null || echo 2)
+    mem_gb=$(awk '/MemTotal/ {printf "%d", $2/1024/1024}' /proc/meminfo 2>/dev/null || echo 2)
+
+    local concurrency max_host_error rate_limit
     if [[ $count -le 50 ]]; then
-      # Small target set: conservative settings
-      concurrency=10
-      max_host_error=20
-      rate_limit=150
-    elif [[ $count -le 150 ]]; then
-      # Medium target set: moderate settings
-      concurrency=20
-      max_host_error=30
+      concurrency=12
       rate_limit=200
-    elif [[ $count -le 500 ]]; then
-      # Large target set: balanced settings
-      concurrency=30
-      max_host_error=40
-      rate_limit=250
+    elif [[ $count -le 200 ]]; then
+      concurrency=24
+      rate_limit=350
+    elif [[ $count -le 800 ]]; then
+      concurrency=36
+      rate_limit=500
     else
-      # Very large target set: aggressive but safe
-      concurrency=40
-      max_host_error=50
-      rate_limit=300
+      concurrency=48
+      rate_limit=650
     fi
-    
-    # Safety check: ensure concurrency <= max_host_error
-    if [[ $concurrency -gt $max_host_error ]]; then
-      concurrency=$max_host_error
-    fi
-    
-    progress "${CYAN}${description}${RESET} (${count} targets, concurrency: ${concurrency})"
+
+    # Cap by VPS resources to avoid overload/timeout storms
+    local core_cap mem_cap
+    core_cap=$(( cores * 8 ))
+    mem_cap=$(( mem_gb * 6 ))
+    [[ $core_cap -lt 8 ]] && core_cap=8
+    [[ $mem_cap -lt 8 ]] && mem_cap=8
+
+    [[ $concurrency -gt $core_cap ]] && concurrency=$core_cap
+    [[ $concurrency -gt $mem_cap ]] && concurrency=$mem_cap
+
+    max_host_error=$(( concurrency + 12 ))
+    [[ $max_host_error -lt $NUCLEI_MAX_HOST_ERROR ]] && max_host_error=$NUCLEI_MAX_HOST_ERROR
+
+    progress "${CYAN}${description}${RESET} (${count} targets, cpu:${cores}, mem:${mem_gb}GB, conc:${concurrency}, rl:${rate_limit})"
 
     nuclei -l "$target_file" -t "$templates" -severity "$severity" -et "$exclude_tags" \
       -o "$output_file" -json-export "${output_file}.json" -silent \
-      -timeout "$NUCLEI_TIMEOUT" -retries 1 \
+      -timeout "$NUCLEI_TIMEOUT" -retries "$NUCLEI_RETRIES" \
       -rate-limit "$rate_limit" \
       -bulk-size 25 \
       -concurrency "$concurrency" \
@@ -621,36 +659,19 @@ if should_run nuclei; then
     fi
   }
 
-  # Prepare EXPLOIT-FOCUSED targets only
+  # Prepare BROAD scan targets
   if [[ -f "$BASE_DIR/http_discovery/live_urls.txt" ]] && [[ -s "$BASE_DIR/http_discovery/live_urls.txt" ]]; then
-    progress "Building exploit-focused target list..."
+    progress "Building broad target list for nuclei..."
     
     {
       cat "$BASE_DIR/http_discovery/live_urls.txt"
       
-      # Add CRITICAL exploit endpoints for 200 OK hosts
-      if [[ -s "$BASE_DIR/http_discovery/status_200.txt" ]]; then
-        while IFS= read -r url; do
-          base=$(echo "$url" | sed 's/\/$//')
-          for path in \
-            /.env /.env.production /.env.local /.env.development \
-            /.git/config /.git/HEAD /.git/index \
-            /.aws/credentials /.aws/config \
-            /config.json /config.yml /config.yaml /configuration.yml \
-            /.htpasswd /web.config /WEB-INF/web.xml \
-            /server-status /server-info \
-            /actuator/env /actuator/heapdump /actuator/mappings /actuator/metrics \
-            /swagger.json /swagger-ui.html /api-docs /openapi.json \
-            /graphql /graphiql \
-            /debug/pprof /debug/vars /_profiler \
-            /.dockerenv /Dockerfile /docker-compose.yml; do
-            echo "$base$path"
-          done
-        done < "$BASE_DIR/http_discovery/status_200.txt"
-      fi
+      # Add discovered historical/crawled endpoints (all endpoint candidates)
+      [[ -s "$BASE_DIR/http_discovery/endpoint_candidates.txt" ]] && cat "$BASE_DIR/http_discovery/endpoint_candidates.txt"
+      [[ -s "$BASE_DIR/http_discovery/high_risk_endpoints.txt" ]] && cat "$BASE_DIR/http_discovery/high_risk_endpoints.txt"
     } | sort -u > "$BASE_DIR/nuclei/scan_targets.txt"
-    
-    success "Prepared: $(wc -l < "$BASE_DIR/nuclei/scan_targets.txt") exploit-focused targets"
+
+    success "Prepared: $(wc -l < "$BASE_DIR/nuclei/scan_targets.txt") broad scan targets"
   else
     touch "$BASE_DIR/nuclei/scan_targets.txt"
     warn "No live URLs found, skipping nuclei scan"
@@ -664,7 +685,7 @@ if should_run nuclei; then
   
   run_nuclei_scan "$BASE_DIR/nuclei/scan_targets.txt" \
     "$NUCLEI_TEMPLATES/http/exposures/" \
-    "medium,high,critical" "$BASE_DIR/nuclei/raw/01_exposures.txt" "Critical Exposures" "dos,fuzz,token"
+    "low,medium,high,critical,unknown" "$BASE_DIR/nuclei/raw/01_exposures.txt" "Critical Exposures" "dos,fuzz,token"
 
   # =================================================================
   # PHASE 2: AUTHENTICATION ISSUES
@@ -673,16 +694,16 @@ if should_run nuclei; then
   
   run_nuclei_scan "$BASE_DIR/nuclei/scan_targets.txt" \
     "$NUCLEI_TEMPLATES/http/default-logins/" \
-    "medium,high,critical" "$BASE_DIR/nuclei/raw/02_default_creds.txt" "Default Credentials" "dos,fuzz"
+    "low,medium,high,critical,unknown" "$BASE_DIR/nuclei/raw/02_default_creds.txt" "Default Credentials" "dos,fuzz"
 
   # =================================================================
   # PHASE 3: INJECTION VULNERABILITIES (SQLi, Command Injection, XXE)
   # =================================================================
-  progress "Phase 3: Injection Vulnerabilities (HIGH+ only)"
+  progress "Phase 3: Injection Vulnerabilities"
   
   run_nuclei_scan "$BASE_DIR/nuclei/scan_targets.txt" \
     "$NUCLEI_TEMPLATES/http/vulnerabilities/generic/" \
-    "high,critical" "$BASE_DIR/nuclei/raw/03_injections.txt" "Injection Attacks" "dos,fuzz,headless"
+    "low,medium,high,critical,unknown" "$BASE_DIR/nuclei/raw/03_injections.txt" "Injection Attacks" "dos,fuzz"
 
   # =================================================================
   # PHASE 4: RECENT CRITICAL CVEs (2024-2025)
@@ -691,7 +712,7 @@ if should_run nuclei; then
   
   run_nuclei_scan "$BASE_DIR/nuclei/scan_targets.txt" \
     "$NUCLEI_TEMPLATES/http/cves/2024/,$NUCLEI_TEMPLATES/http/cves/2025/" \
-    "high,critical" "$BASE_DIR/nuclei/raw/04_recent_cves.txt" "Recent CVEs" "dos,fuzz"
+    "low,medium,high,critical,unknown" "$BASE_DIR/nuclei/raw/04_recent_cves.txt" "Recent CVEs" "dos,fuzz"
 
   # =================================================================
   # PHASE 5: ALL CRITICAL CVEs
@@ -700,7 +721,7 @@ if should_run nuclei; then
   
   run_nuclei_scan "$BASE_DIR/nuclei/scan_targets.txt" \
     "$NUCLEI_TEMPLATES/http/cves/" \
-    "critical" "$BASE_DIR/nuclei/raw/05_all_critical_cves.txt" "All Critical CVEs" "dos,fuzz,headless,intrusive"
+    "low,medium,high,critical,unknown" "$BASE_DIR/nuclei/raw/05_all_critical_cves.txt" "All Critical CVEs" "dos,fuzz"
 
   # =================================================================
   # PHASE 6: SUBDOMAIN TAKEOVER (If candidates exist)
@@ -709,11 +730,11 @@ if should_run nuclei; then
     progress "Phase 6: Subdomain Takeover Detection"
     run_nuclei_scan "$BASE_DIR/recon_intel/takeover_candidates.txt" \
       "$NUCLEI_TEMPLATES/http/takeovers/,$NUCLEI_TEMPLATES/dns/" \
-      "medium,high,critical" "$BASE_DIR/nuclei/raw/06_takeover.txt" "Subdomain Takeover" "dos"
+      "low,medium,high,critical,unknown" "$BASE_DIR/nuclei/raw/06_takeover.txt" "Subdomain Takeover" "dos"
   fi
 
   # =================================================================
-  # PHASE 7: TECHNOLOGY-SPECIFIC EXPLOITS (HIGH+ only)
+  # PHASE 7: TECHNOLOGY-SPECIFIC EXPLOITS
   # =================================================================
   progress "Phase 7: Technology-Specific Exploits"
   
@@ -727,7 +748,7 @@ if should_run nuclei; then
       [[ -s "$BASE_DIR/nuclei/wordpress_targets.txt" ]] && \
         run_nuclei_scan "$BASE_DIR/nuclei/wordpress_targets.txt" \
           "$NUCLEI_TEMPLATES/http/vulnerabilities/wordpress/" \
-          "high,critical" "$BASE_DIR/nuclei/raw/07_wordpress.txt" "WordPress Exploits" "dos,fuzz"
+          "low,medium,high,critical,unknown" "$BASE_DIR/nuclei/raw/07_wordpress.txt" "WordPress Exploits" "dos,fuzz"
     fi
 
     # Jenkins
@@ -737,7 +758,7 @@ if should_run nuclei; then
       [[ -s "$BASE_DIR/nuclei/jenkins_targets.txt" ]] && \
         run_nuclei_scan "$BASE_DIR/nuclei/jenkins_targets.txt" \
           "$NUCLEI_TEMPLATES/http/vulnerabilities/jenkins/" \
-          "high,critical" "$BASE_DIR/nuclei/raw/07_jenkins.txt" "Jenkins RCE" "dos,fuzz"
+          "low,medium,high,critical,unknown" "$BASE_DIR/nuclei/raw/07_jenkins.txt" "Jenkins RCE" "dos,fuzz"
     fi
 
     # Jira/Atlassian
@@ -747,7 +768,7 @@ if should_run nuclei; then
       [[ -s "$BASE_DIR/nuclei/atlassian_targets.txt" ]] && \
         run_nuclei_scan "$BASE_DIR/nuclei/atlassian_targets.txt" \
           "$NUCLEI_TEMPLATES/http/vulnerabilities/atlassian/" \
-          "high,critical" "$BASE_DIR/nuclei/raw/07_atlassian.txt" "Atlassian Exploits" "dos,fuzz"
+          "low,medium,high,critical,unknown" "$BASE_DIR/nuclei/raw/07_atlassian.txt" "Atlassian Exploits" "dos,fuzz"
     fi
     
     # Spring Boot
@@ -755,7 +776,7 @@ if should_run nuclei; then
       TECH_FOUND=true
       run_nuclei_scan "$BASE_DIR/nuclei/scan_targets.txt" \
         "$NUCLEI_TEMPLATES/http/vulnerabilities/springboot/,$NUCLEI_TEMPLATES/http/misconfiguration/springboot/" \
-        "high,critical" "$BASE_DIR/nuclei/raw/07_springboot.txt" "Spring Boot RCE" "dos,fuzz"
+        "low,medium,high,critical,unknown" "$BASE_DIR/nuclei/raw/07_springboot.txt" "Spring Boot RCE" "dos,fuzz"
     fi
 
     # Apache/Struts
@@ -763,20 +784,20 @@ if should_run nuclei; then
       TECH_FOUND=true
       run_nuclei_scan "$BASE_DIR/nuclei/scan_targets.txt" \
         "$NUCLEI_TEMPLATES/http/vulnerabilities/apache/" \
-        "high,critical" "$BASE_DIR/nuclei/raw/07_apache.txt" "Apache/Struts RCE" "dos,fuzz"
+        "low,medium,high,critical,unknown" "$BASE_DIR/nuclei/raw/07_apache.txt" "Apache/Struts RCE" "dos,fuzz"
     fi
     
-    [[ "$TECH_FOUND" == false ]] && log "No exploitable technologies detected"
+    [[ "$TECH_FOUND" == false ]] && log "No targeted technologies detected"
   fi
 
   # =================================================================
-  # PHASE 8: DANGEROUS MISCONFIGURATIONS (HIGH+ only)
+  # PHASE 8: DANGEROUS MISCONFIGURATIONS
   # =================================================================
-  progress "Phase 8: RCE-Enabling Misconfigurations"
+  progress "Phase 8: Misconfigurations"
   
   run_nuclei_scan "$BASE_DIR/nuclei/scan_targets.txt" \
     "$NUCLEI_TEMPLATES/http/misconfiguration/" \
-    "high,critical" "$BASE_DIR/nuclei/raw/08_misconfigs.txt" "Dangerous Misconfigs" "dos,fuzz,headless,generic,token"
+    "low,medium,high,critical,unknown" "$BASE_DIR/nuclei/raw/08_misconfigs.txt" "Dangerous Misconfigs" "dos,fuzz,token"
 
   # =================================================================
   # PHASE 9: COMPREHENSIVE VULNERABILITY SCAN (Adaptive)
@@ -786,23 +807,23 @@ if should_run nuclei; then
   echo -e "    ${DIM}Target count: ${YELLOW}$TARGET_COUNT${RESET}"
 
   if [[ $TARGET_COUNT -le 150 ]]; then
-    progress "Small scope ($TARGET_COUNT targets) - MEDIUM+ full scan"
+    progress "Small scope ($TARGET_COUNT targets) - full severity scan"
     run_nuclei_scan "$BASE_DIR/nuclei/scan_targets.txt" \
       "$NUCLEI_TEMPLATES/http/vulnerabilities/" \
-      "medium,high,critical" "$BASE_DIR/nuclei/raw/09_comprehensive.txt" \
-      "All Vulnerabilities (MEDIUM+)" "dos,fuzz,intrusive,headless"
+      "low,medium,high,critical,unknown" "$BASE_DIR/nuclei/raw/09_comprehensive.txt" \
+      "All Vulnerabilities" "dos,fuzz"
   elif [[ $TARGET_COUNT -le 500 ]]; then
-    progress "Medium scope ($TARGET_COUNT targets) - HIGH+ focused"
+    progress "Medium scope ($TARGET_COUNT targets) - full severity scan"
     run_nuclei_scan "$BASE_DIR/nuclei/scan_targets.txt" \
       "$NUCLEI_TEMPLATES/http/vulnerabilities/" \
-      "high,critical" "$BASE_DIR/nuclei/raw/09_comprehensive.txt" \
-      "High-Impact Vulnerabilities" "dos,fuzz,intrusive,headless"
+      "low,medium,high,critical,unknown" "$BASE_DIR/nuclei/raw/09_comprehensive.txt" \
+      "All Vulnerabilities" "dos,fuzz"
   else
-    progress "Large scope ($TARGET_COUNT targets) - CRITICAL only"
+    progress "Large scope ($TARGET_COUNT targets) - full severity scan"
     run_nuclei_scan "$BASE_DIR/nuclei/scan_targets.txt" \
       "$NUCLEI_TEMPLATES/http/vulnerabilities/" \
-      "critical" "$BASE_DIR/nuclei/raw/09_comprehensive.txt" \
-      "Critical Vulnerabilities" "dos,fuzz,intrusive,headless"
+      "low,medium,high,critical,unknown" "$BASE_DIR/nuclei/raw/09_comprehensive.txt" \
+      "All Vulnerabilities" "dos,fuzz"
   fi
 
   # =================================================================
@@ -812,37 +833,31 @@ if should_run nuclei; then
     progress "Phase 10: Custom Templates"
     run_nuclei_scan "$BASE_DIR/nuclei/scan_targets.txt" \
       "$CUSTOM_NUCLEI_TEMPLATES/" \
-      "medium,high,critical" "$BASE_DIR/nuclei/raw/10_custom.txt" "Custom Exploits" "dos"
+      "low,medium,high,critical,unknown" "$BASE_DIR/nuclei/raw/10_custom.txt" "Custom Exploits" "dos"
   fi
 
   # =================================================================
-  # AGGRESSIVE NOISE FILTERING
+  # COMMON NOISE FILTERING
   # =================================================================
-  progress "Filtering results (AGGRESSIVE - removing ALL noise)..."
+  progress "Filtering results (removing common noise)..."
   
   cat "$BASE_DIR/nuclei/raw/"*.txt 2>/dev/null | sort -u > "$BASE_DIR/nuclei/processed/all_findings_raw.txt" || touch "$BASE_DIR/nuclei/processed/all_findings_raw.txt"
   
-  # Remove info, low, unknown AND common false positives
-  grep -Ev '\[info\]|\[low\]|\[unknown\]' "$BASE_DIR/nuclei/processed/all_findings_raw.txt" 2>/dev/null | \
-    grep -Ev 'dns-saas|tech-detect|waf-detect|fingerprint|ssl-|tls-|http-trace|options-method|
-missing-security-headers|x-frame-options|x-content-type|content-security-policy|strict-transport|
-permissions-policy|referrer-policy|x-permitted|x-xss-protection|
-weak-cipher|deprecated-tls|self-signed|untrusted-root|
-robots-txt|sitemap|security\.txt|humans\.txt|ads\.txt|
-cookie-without-secure|cookie-without-httponly|
-verbose-|exposed-panel|login-page|signup-page|
-error-based|version-detect|default-page|generic-detect|
-detect-|discovery-|service-detect|application-detect' 2>/dev/null | \
+  # Keep findings broad; remove only very noisy detections
+  cat "$BASE_DIR/nuclei/processed/all_findings_raw.txt" 2>/dev/null | \
+    grep -Evi 'dns-saas|tech-detect|waf-detect|fingerprint|favicon-detect' 2>/dev/null | \
     sort -u > "$BASE_DIR/nuclei/processed/all_findings.txt" || touch "$BASE_DIR/nuclei/processed/all_findings.txt"
   
   # Categorize by severity
   grep -Ei '\[critical\]' "$BASE_DIR/nuclei/processed/all_findings.txt" 2>/dev/null | sort -u > "$BASE_DIR/nuclei/processed/CRITICAL.txt" || touch "$BASE_DIR/nuclei/processed/CRITICAL.txt"
   grep -Ei '\[high\]' "$BASE_DIR/nuclei/processed/all_findings.txt" 2>/dev/null | sort -u > "$BASE_DIR/nuclei/processed/HIGH.txt" || touch "$BASE_DIR/nuclei/processed/HIGH.txt"
   grep -Ei '\[medium\]' "$BASE_DIR/nuclei/processed/all_findings.txt" 2>/dev/null | sort -u > "$BASE_DIR/nuclei/processed/MEDIUM.txt" || touch "$BASE_DIR/nuclei/processed/MEDIUM.txt"
+  grep -Ei '\[low\]' "$BASE_DIR/nuclei/processed/all_findings.txt" 2>/dev/null | sort -u > "$BASE_DIR/nuclei/processed/LOW.txt" || touch "$BASE_DIR/nuclei/processed/LOW.txt"
+  grep -Ei '\[unknown\]' "$BASE_DIR/nuclei/processed/all_findings.txt" 2>/dev/null | sort -u > "$BASE_DIR/nuclei/processed/UNKNOWN.txt" || touch "$BASE_DIR/nuclei/processed/UNKNOWN.txt"
 
-  # Filter JSON (remove info/low/unknown)
+  # Merge JSON results without severity filtering
   if ls "$BASE_DIR/nuclei/json/"*.json 1> /dev/null 2>&1; then
-    jq -s 'add | map(select(.info.severity != "info" and .info.severity != "low" and .info.severity != "unknown"))' \
+    jq -s 'add' \
       "$BASE_DIR/nuclei/json/"*.json 2>/dev/null > "$BASE_DIR/nuclei/processed/all_findings.json" || echo "[]" > "$BASE_DIR/nuclei/processed/all_findings.json"
   else
     echo "[]" > "$BASE_DIR/nuclei/processed/all_findings.json"
@@ -852,25 +867,31 @@ detect-|discovery-|service-detect|application-detect' 2>/dev/null | \
   CRIT=$(wc -l < "$BASE_DIR/nuclei/processed/CRITICAL.txt" 2>/dev/null || echo 0)
   HIGH=$(wc -l < "$BASE_DIR/nuclei/processed/HIGH.txt" 2>/dev/null || echo 0)
   MED=$(wc -l < "$BASE_DIR/nuclei/processed/MEDIUM.txt" 2>/dev/null || echo 0)
+  LOW=$(wc -l < "$BASE_DIR/nuclei/processed/LOW.txt" 2>/dev/null || echo 0)
+  UNKNOWN=$(wc -l < "$BASE_DIR/nuclei/processed/UNKNOWN.txt" 2>/dev/null || echo 0)
   ALL=$(wc -l < "$BASE_DIR/nuclei/processed/all_findings.txt" 2>/dev/null || echo 0)
+
+  grep -Eio 'CVE-[0-9]{4}-[0-9]+' "$BASE_DIR/nuclei/processed/all_findings.txt" 2>/dev/null |
+    sort | uniq -c | sort -nr > "$BASE_DIR/nuclei/processed/TOP_CVES.txt" || touch "$BASE_DIR/nuclei/processed/TOP_CVES.txt"
+  TOP_CVE_COUNT=$(wc -l < "$BASE_DIR/nuclei/processed/TOP_CVES.txt" 2>/dev/null || echo 0)
 
   {
     echo "================================================================="
-    echo "AGGRESSIVE NUCLEI SCAN SUMMARY - $(date)"
+    echo "COMPREHENSIVE NUCLEI SCAN SUMMARY - $(date)"
     echo "================================================================="
     echo ""
-    echo "EXPLOITABLE VULNERABILITIES FOUND:"
+    echo "VULNERABILITIES FOUND:"
     echo "  🔴 Critical:  $CRIT"
     echo "  🟠 High:      $HIGH"
     echo "  🟡 Medium:    $MED"
+    echo "  🔵 Low:       $LOW"
+    echo "  ⚪ Unknown:   $UNKNOWN"
     echo "  ━━━━━━━━━━━━━━━━━━━"
     echo "  ✅ Total:     $ALL"
+    echo "  🧨 CVEs:      $TOP_CVE_COUNT unique IDs"
     echo ""
     echo "FILTERING APPLIED:"
-    echo "  ✗ Removed: info, low, unknown severity"
-    echo "  ✗ Removed: fingerprinting, tech detection"
-    echo "  ✗ Removed: SSL/TLS info, missing headers"
-    echo "  ✗ Removed: generic detections, exposed panels"
+    echo "  ✗ Removed: pure detection/fingerprint noise"
     echo ""
     echo "================================================================="
     
@@ -897,18 +918,26 @@ detect-|discovery-|service-detect|application-detect' 2>/dev/null | \
       head -20 "$BASE_DIR/nuclei/processed/MEDIUM.txt"
       [[ $MED -gt 20 ]] && echo "... and $((MED - 20)) more (see nuclei/processed/MEDIUM.txt)"
     fi
+
+    if [[ $TOP_CVE_COUNT -gt 0 ]]; then
+      echo ""
+      echo "🧨 TOP CVE IDs (by hit count):"
+      echo "================================================================="
+      head -20 "$BASE_DIR/nuclei/processed/TOP_CVES.txt"
+      [[ $TOP_CVE_COUNT -gt 20 ]] && echo "... and $((TOP_CVE_COUNT - 20)) more (see nuclei/processed/TOP_CVES.txt)"
+    fi
     
     if [[ $ALL -eq 0 ]]; then
       echo ""
-      echo "✅ NO EXPLOITABLE VULNERABILITIES DETECTED"
-      echo "   (All info/low findings filtered out)"
+      echo "✅ NO VULNERABILITIES DETECTED"
+      echo "   (No findings remained after false-positive filtering)"
     fi
   } > "$BASE_DIR/nuclei/SCAN_SUMMARY.txt"
 
   # Display results
   echo ""
   if [[ $CRIT -gt 0 ]]; then
-    warn "🔴 CRITICAL: ${RED}${BOLD}$CRIT${RESET} exploitable vulnerabilities"
+    warn "🔴 CRITICAL: ${RED}${BOLD}$CRIT${RESET} vulnerabilities"
   fi
   if [[ $HIGH -gt 0 ]]; then
     warn "🟠 HIGH: ${YELLOW}${BOLD}$HIGH${RESET} high-severity issues"
@@ -917,9 +946,9 @@ detect-|discovery-|service-detect|application-detect' 2>/dev/null | \
     log "🟡 MEDIUM: ${CYAN}$MED${RESET} medium-severity issues"
   fi
   if [[ $ALL -gt 0 ]]; then
-    success "✓ Total EXPLOITABLE findings: ${GREEN}${BOLD}$ALL${RESET} (info/low filtered)"
+    success "✓ Total findings: ${GREEN}${BOLD}$ALL${RESET}"
   else
-    success "✓ No exploitable vulnerabilities detected (info/low filtered)"
+    success "✓ No vulnerabilities detected after filtering"
   fi
 
   cp "$BASE_DIR/nuclei/processed/CRITICAL.txt" "$BASE_DIR/nuclei/CRITICAL_FINDINGS.txt" 2>/dev/null || true
@@ -931,7 +960,7 @@ fi
 ########################################
 echo ""
 echo -e "${CYAN}╔════════════════════════════════════════════════════════════════╗${RESET}"
-echo -e "${CYAN}║${RESET}          ${BOLD}${GREEN}AGGRESSIVE RECONNAISSANCE COMPLETE${RESET}             ${CYAN}║${RESET}"
+echo -e "${CYAN}║${RESET}         ${BOLD}${GREEN}COMPREHENSIVE RECONNAISSANCE COMPLETE${RESET}           ${CYAN}║${RESET}"
 echo -e "${CYAN}╠════════════════════════════════════════════════════════════════╣${RESET}"
 echo -e "${CYAN}║${RESET}  Target: ${YELLOW}${BOLD}$(printf '%-50s' "$domain")${RESET} ${CYAN}║${RESET}"
 echo -e "${CYAN}╠════════════════════════════════════════════════════════════════╣${RESET}"
@@ -958,9 +987,9 @@ echo -e "${CYAN}╚════════════════════�
 # Generate report
 {
   echo "╔════════════════════════════════════════════════════════════════╗"
-  echo "║   AGGRESSIVE RECONNAISSANCE REPORT - $domain"
+  echo "║   COMPREHENSIVE RECONNAISSANCE REPORT - $domain"
   echo "║   Generated: $(date '+%F %T')"
-  echo "║   Mode: MEDIUM+ EXPLOITABLE VULNERABILITIES ONLY"
+  echo "║   Mode: LOW,MEDIUM,HIGH,CRITICAL,UNKNOWN"
   echo "╚════════════════════════════════════════════════════════════════╝"
   echo ""
   echo "═══ DISCOVERY STATISTICS ═══"
@@ -968,6 +997,8 @@ echo -e "${CYAN}╚════════════════════�
   echo "Enumeration Results:"
   echo "  • Total Domains:     $(wc -l < "$BASE_DIR/dns/resolved_domains.txt" 2>/dev/null || echo 0)"
   echo "  • Live HTTP:         $(wc -l < "$BASE_DIR/http_discovery/live_urls.txt" 2>/dev/null || echo 0)"
+  echo "  • URL Candidates:    $(wc -l < "$BASE_DIR/http_discovery/endpoint_candidates.txt" 2>/dev/null || echo 0)"
+  echo "  • High-Risk URLs:    $(wc -l < "$BASE_DIR/http_discovery/high_risk_endpoints.txt" 2>/dev/null || echo 0)"
   echo "  • Technologies:      $(wc -l < "$BASE_DIR/http_discovery/technologies.txt" 2>/dev/null || echo 0)"
   echo ""
   echo "HTTP Status:"
@@ -976,14 +1007,20 @@ echo -e "${CYAN}╚════════════════════�
   echo "  • 403 Forbidden:     $(wc -l < "$BASE_DIR/http_discovery/status_403.txt" 2>/dev/null || echo 0)"
   echo "  • 5xx Errors:        $(wc -l < "$BASE_DIR/http_discovery/status_5xx.txt" 2>/dev/null || echo 0)"
   echo ""
-  echo "═══ EXPLOITABLE VULNERABILITIES (MEDIUM+) ═══"
+  echo "═══ VULNERABILITIES (ALL SEVERITIES) ═══"
   echo ""
   CRIT_COUNT=$(wc -l < "$BASE_DIR/nuclei/CRITICAL_FINDINGS.txt" 2>/dev/null || echo 0)
   HIGH_COUNT=$(wc -l < "$BASE_DIR/nuclei/HIGH_FINDINGS.txt" 2>/dev/null || echo 0)
   MED_COUNT=$(wc -l < "$BASE_DIR/nuclei/processed/MEDIUM.txt" 2>/dev/null || echo 0)
+  LOW_COUNT=$(wc -l < "$BASE_DIR/nuclei/processed/LOW.txt" 2>/dev/null || echo 0)
+  UNKNOWN_COUNT=$(wc -l < "$BASE_DIR/nuclei/processed/UNKNOWN.txt" 2>/dev/null || echo 0)
   echo "🔴 Critical: $CRIT_COUNT"
   echo "🟠 High:     $HIGH_COUNT"
   echo "🟡 Medium:   $MED_COUNT"
+  echo "🔵 Low:      $LOW_COUNT"
+  echo "⚪ Unknown:  $UNKNOWN_COUNT"
+  TOP_CVE_COUNT=$(wc -l < "$BASE_DIR/nuclei/processed/TOP_CVES.txt" 2>/dev/null || echo 0)
+  echo "🧨 Unique CVEs: $TOP_CVE_COUNT"
   echo ""
   if [[ $CRIT_COUNT -gt 0 ]]; then
     echo "Critical Findings:"
